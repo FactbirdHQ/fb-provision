@@ -25,4 +25,4 @@ jobs:
           author_name: Github actions
           author_email: ci@actions.com
           message: 'Update ${{ matrix.drawio }} documentation'
-          add: 'docs/${{ matrix.drawio }}.svg'
+          add: 'docs/${{ matrix.drawio }}.png'

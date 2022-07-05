@@ -1,0 +1,28 @@
+on:
+  push:
+    paths:
+      - 'docs/*'
+
+name: Documentation
+
+jobs:
+  generate-docs:
+    name: Generate documentation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        drawio: [provisioning]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Convert diagram to png
+        uses: Burnett01/actions-drawio@1.2
+        with:
+          src: docs/${{ matrix.drawio }}.drawio
+          dest: docs/${{ matrix.drawio }}.svg
+      - name: Commit changes
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: Github actions
+          author_email: ci@actions.com
+          message: 'Update ${{ matrix.drawio }} documentation'
+          add: 'docs/${{ matrix.drawio }}.svg'

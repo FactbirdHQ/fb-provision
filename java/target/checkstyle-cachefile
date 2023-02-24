@@ -1,8 +1,0 @@
-#Fri Jan 21 15:53:57 CET 2022
-configuration*?=D341522A9F9D7E727A142B7350BF508EC16EAAF3
-/home/mathias/git/blackbird/factbird-view/bb-provision/src/main/java/com/aws/greengrass/IotIdentityHelperFactory.java=1642326661219
-/home/mathias/git/blackbird/factbird-view/bb-provision/src/main/java/com/aws/greengrass/MgmtCloudRouterFactory.java=1642430786860
-module-resource*?\:checkstyle-xpath-suppressions.xml=253F2218FEBAE5F8A72C5328EFB0C66BEBAA4B30
-module-resource*?\:checkstyle-suppressions.xml=7695753232490528FD2BBD046590B41807B0A31D
-/home/mathias/git/blackbird/factbird-view/bb-provision/src/main/java/com/aws/greengrass/model/GetEndpointRequest.java=1642430558309
-/home/mathias/git/blackbird/factbird-view/bb-provision/src/main/java/com/aws/greengrass/model/GetEndpointSubscriptionRequest.java=1642430791873

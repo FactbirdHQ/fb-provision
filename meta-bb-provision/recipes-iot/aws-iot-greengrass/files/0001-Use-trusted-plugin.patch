@@ -1,0 +1,1 @@
+Patch https://github.com/aws-greengrass/aws-greengrass-nucleus/blob/main/scripts/loader to include "--trusted-plugin ..."

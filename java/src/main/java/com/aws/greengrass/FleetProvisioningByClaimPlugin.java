@@ -27,9 +27,9 @@ import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -45,6 +45,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
@@ -74,8 +75,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
 
-        static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/thingCert.crt";
-        static final String PRIVATE_KEY_PATH_RELATIVE_TO_ROOT = "/privKey.key";
+        static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/auth/prov.cert.pem";
+        static final String PRIVATE_KEY_PATH_RELATIVE_TO_ROOT = "/auth/prov.pkey.pem";
 
         private final IotIdentityHelperFactory iotIdentityHelperFactory;
         private final MgmtCloudRouterFactory mgmtCloudRouterFactory;
@@ -131,7 +132,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String signature = "";
                 String clientId = "";
                 try {
-                        clientId = getclientId();
+                        clientId = getClientId();
                         PrivateKey privKey = readPrivateKey(new File(signKeyPath));
                         signature = sign(clientId, privKey);
                 } catch (Exception ex) {
@@ -288,19 +289,16 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .build();
         }
 
-        // FIXME: Call `uuid` for clientId
-        private String getclientId() throws Exception {
-                try {
-                        String[] args = { "uuid" };
-                        ProcessBuilder cmd = new ProcessBuilder(args);
-                        Process process = cmd.start();
-                        BufferedReader br = process.inputReader(Charset.defaultCharset());
-
-                        br.close();
-                } catch (IOException ex) {
-                        ex.printStackTrace();
+        private static String getClientId() {
+                String result = null;
+                String[] cmd  = {"uuid"};
+                try (InputStream inputStream = Runtime.getRuntime().exec(cmd).getInputStream();
+                        Scanner s = new Scanner(inputStream).useDelimiter("\\A")) {
+                    result = s.hasNext() ? s.next() : null;
+                } catch (IOException e) {
+                    e.printStackTrace();
                 }
-                throw new Exception("");
+                return result;
         }
 
         private RSAPrivateKey readPrivateKey(File file) throws Exception {

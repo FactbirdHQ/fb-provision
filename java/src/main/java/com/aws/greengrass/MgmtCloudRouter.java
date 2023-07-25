@@ -5,20 +5,19 @@
 
 package com.aws.greengrass;
 
-import static com.aws.greengrass.FutureExceptionHandler.AWS_IOT_DEFAULT_TIMEOUT_SECONDS;
-
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
-
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import com.aws.greengrass.model.GetEndpointRequest;
 import com.aws.greengrass.model.GetEndpointResponse;
 import com.aws.greengrass.model.GetEndpointSubscriptionRequest;
 import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
-
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.crt.mqtt.QualityOfService;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+
+import static com.aws.greengrass.FutureExceptionHandler.AWS_IOT_DEFAULT_TIMEOUT_SECONDS;
 
 public class MgmtCloudRouter {
 
@@ -55,14 +54,15 @@ public class MgmtCloudRouter {
      * @throws InterruptedException           on thread interruption
      * @throws RetryableProvisioningException on transient errors like timeout
      */
-    public Future<GetEndpointResponse> getEndpoint(String uuid, String signature, int timeout) throws InterruptedException,
-            RetryableProvisioningException {
+    public Future<GetEndpointResponse> getEndpoint(String uuid, String signature, int timeout) 
+        throws InterruptedException, RetryableProvisioningException {
 
         CompletableFuture<GetEndpointResponse> getEndpointFuture = new CompletableFuture<>();
         GetEndpointSubscriptionRequest getEndpointSubscriptionRequest = new GetEndpointSubscriptionRequest();
 
         CompletableFuture<Integer> getEndpointSubscribedAccepted = getEndpointClient
-                .SubscribeToGetEndpointAccepted(
+                .subscribeToGetEndpointAccepted(
+                        uuid,
                         getEndpointSubscriptionRequest,
                         QualityOfService.AT_LEAST_ONCE,
                         (response) -> getEndpointFuture.complete(response));
@@ -70,7 +70,8 @@ public class MgmtCloudRouter {
 
         logger.atInfo().log("Subscribed to GetEndpointAccepted");
 
-        CompletableFuture<Integer> getEndpointSubscribedRejected = getEndpointClient.SubscribeToGetEndpointRejected(
+        CompletableFuture<Integer> getEndpointSubscribedRejected = getEndpointClient.subscribeToGetEndpointRejected(
+                uuid,
                 getEndpointSubscriptionRequest,
                 QualityOfService.AT_LEAST_ONCE,
                 (errorResponse) -> {
@@ -85,7 +86,8 @@ public class MgmtCloudRouter {
         getEndpointRequest.uuid = uuid;
         getEndpointRequest.signature = signature;
 
-        CompletableFuture<Integer> publishGetEndpoint = getEndpointClient.PublishGetEndpoint(
+        CompletableFuture<Integer> publishGetEndpoint = getEndpointClient.publishGetEndpoint(
+                uuid,
                 getEndpointRequest,
                 QualityOfService.AT_LEAST_ONCE);
         FutureExceptionHandler.getFutureAfterCompletion(publishGetEndpoint);

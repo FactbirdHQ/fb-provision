@@ -5,16 +5,9 @@
 
 package com.aws.greengrass;
 
-import static com.aws.greengrass.FutureExceptionHandler.AWS_IOT_DEFAULT_TIMEOUT_SECONDS;
-
-import java.util.HashMap;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
-
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
-
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.crt.mqtt.QualityOfService;
 import software.amazon.awssdk.iot.iotidentity.IotIdentityClient;
@@ -24,6 +17,12 @@ import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateSubs
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingRequest;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingSubscriptionRequest;
+
+import java.util.HashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+
+import static com.aws.greengrass.FutureExceptionHandler.AWS_IOT_DEFAULT_TIMEOUT_SECONDS;
 
 public class IotIdentityHelper {
 
@@ -64,7 +63,8 @@ public class IotIdentityHelper {
             RetryableProvisioningException {
 
         CompletableFuture<CreateKeysAndCertificateResponse> createFuture = new CompletableFuture<>();
-        CreateKeysAndCertificateSubscriptionRequest createKeysAndCertificateSubscriptionRequest = new CreateKeysAndCertificateSubscriptionRequest();
+        CreateKeysAndCertificateSubscriptionRequest createKeysAndCertificateSubscriptionRequest = 
+            new CreateKeysAndCertificateSubscriptionRequest();
         CompletableFuture<Integer> keysSubscribedAccepted = iotIdentityClient
                 .SubscribeToCreateKeysAndCertificateAccepted(
                         createKeysAndCertificateSubscriptionRequest,

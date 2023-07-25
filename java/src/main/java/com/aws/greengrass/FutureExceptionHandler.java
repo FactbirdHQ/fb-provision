@@ -5,16 +5,15 @@
 
 package com.aws.greengrass;
 
+import com.aws.greengrass.logging.api.Logger;
+import com.aws.greengrass.logging.impl.LogManager;
+import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
+import software.amazon.awssdk.crt.mqtt.MqttException;
+
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-
-import com.aws.greengrass.logging.api.Logger;
-import com.aws.greengrass.logging.impl.LogManager;
-import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
-
-import software.amazon.awssdk.crt.mqtt.MqttException;
 
 public final class FutureExceptionHandler {
     public static final int AWS_IOT_DEFAULT_TIMEOUT_SECONDS = 30;

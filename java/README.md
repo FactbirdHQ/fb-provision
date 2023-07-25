@@ -18,18 +18,18 @@ The plugin requires following artifacts on the device before starting greengrass
 This plugin takes following parameters
 
 ### Required
+- **provisionEndpoint**: The provisioning endpoint to use
 - **provisioningTemplate**: The provisioning template name
 - **claimCertificatePath**: Path of the claim certificate on the device.
 - **claimCertificatePrivateKeyPath**: Path of the claim certificate private key on the device
+- **signPrivateKeyPath**: Path of the private key on the device used for signing provisioning payloads
 - **rootCaPath**: Path of the root CA
-- **iotDataEndpoint**: IoT data endpoint for the AWS account
 - **rootPath**: Root path for Greengrass
+- **mqttPort**: Port used by the MQTT client
 
 ### Optional
-- **deviceId**: The device identifier which will be used as client id in the mqtt connection to AWS IoT
 - **templateParameters**: Map<String, String> of parameters which will be passed to provisioning template 
 - **awsRegion**: AWS Region
-- **iotCredentialEndpoint**: IoT credentials endpoint for the AWS account
 - **iotRoleAlias**: Role alias to be used by Greengrass nucleus to get TES credentials.
 - **proxyUrl**: Http proxy url to be used for mqtt connection. The url is of format
   *scheme://userinfo@host:port* 
@@ -52,6 +52,10 @@ Use following command to start greengrass with provisioning plugin on the device
 --trusted-plugin <secure_path_to_plugin_jar>/FleetProvisioningByClaim.jar 
 -r /home/ec2-user/demo/greengrass/v2`
 
+## Building
+
+The `FleetProvisioningByClaim.jar` can be built from clean state using
+`mvn package`
 
 ## License
 This project is licensed under the Apache-2.0 License.

@@ -5,19 +5,6 @@
 
 package com.aws.greengrass;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
-
 import com.aws.greengrass.MqttConnectionHelper.MqttConnectionParameters.MqttConnectionParametersBuilder;
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
@@ -31,7 +18,6 @@ import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException
 import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
-
 import software.amazon.awssdk.crt.CrtRuntimeException;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
@@ -41,19 +27,41 @@ import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.Signature;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+
 public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
         static final String PLUGIN_NAME = "aws.greengrass.FleetProvisioningByClaim";
         private static final Logger logger = LogManager.getLogger(FleetProvisioningByClaimPlugin.class);
 
         // Required parameters
+        static final String PROVISION_ENDPOINT = "provisionEndpoint";
         static final String PROVISIONING_TEMPLATE_PARAMETER_NAME = "provisioningTemplate";
         static final String CLAIM_CERTIFICATE_PATH_PARAMETER_NAME = "claimCertificatePath";
         static final String CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME = "claimCertificatePrivateKeyPath";
+        static final String SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME = "signPrivateKeyPath";
         static final String ROOT_CA_PATH_PARAMETER_NAME = "rootCaPath";
         static final String ROOT_PATH_PARAMETER_NAME = "rootPath";
         static final String MQTT_PORT_PARAMETER_NAME = "mqttPort";
-        static final String DEVICE_ID_PARAMETER_NAME = "deviceId";
 
         // Optional Paramters
         static final String TEMPLATE_PARAMETERS_PARAMETER_NAME = "templateParameters";
@@ -101,11 +109,12 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 String certPath = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString();
                 String keyPath = parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-                String clientId = parameterMap.get(DEVICE_ID_PARAMETER_NAME).toString();
+                String signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
                 Integer mqttPort = null;
                 if (parameterMap.get(MQTT_PORT_PARAMETER_NAME) != null) {
                         mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
                 }
+                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT).toString();
                 String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
                 String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
                 String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
@@ -119,6 +128,18 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 Map<String, Object> templateParameters = (Map<String, Object>) parameterMap
                                 .get(TEMPLATE_PARAMETERS_PARAMETER_NAME);
 
+                String signature = "";
+                String clientId = "";
+                try {
+                        clientId = getclientId();
+                        PrivateKey privKey = readPrivateKey(new File(signKeyPath));
+                        signature = sign(clientId, privKey);
+                } catch (Exception ex) {
+                        logger.atError().setCause(ex)
+                                        .log("Exception encountered while getting claimed cloud endpoint information");
+                        throw new InterruptedException();
+                }
+
                 MqttConnectionParametersBuilder mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
                                 .builder()
                                 .certPath(certPath)
@@ -131,15 +152,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotDataEndpoint = "";
                 String provisionedIotCredentialsEndpoint = "";
 
-                String signature = "";
-
+                // Obtain cloud endpoint
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
 
                                 MqttClientConnection mgmtConnection = mqttConnectionHelper
                                                 .getMqttConnection(mqttParameterBuilder
-                                                                .endpoint("provision.blackbird.online")
+                                                                .endpoint(provisionEndpoint)
                                                                 .clientBootstrap(clientBootstrap).build())) {
 
                         CompletableFuture<Boolean> connected = mgmtConnection.connect();
@@ -165,6 +185,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         throw ex;
                 }
 
+                // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
@@ -220,9 +241,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
                 List<String> errors = new ArrayList<>();
                 checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
-                checkRequiredParameterPresent(parameterMap, errors, DEVICE_ID_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
+                checkRequiredParameterPresent(parameterMap, errors, SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_CA_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_PATH_PARAMETER_NAME);
 
@@ -265,6 +286,46 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .systemConfiguration(systemConfiguration)
                                 .nucleusConfiguration(nucleusConfiguration)
                                 .build();
+        }
+
+        // FIXME: Call `uuid` for clientId
+        private String getclientId() throws Exception {
+                try {
+                        String[] args = { "uuid" };
+                        ProcessBuilder cmd = new ProcessBuilder(args);
+                        Process process = cmd.start();
+                        BufferedReader br = process.inputReader(Charset.defaultCharset());
+
+                        br.close();
+                } catch (IOException ex) {
+                        ex.printStackTrace();
+                }
+                throw new Exception("");
+        }
+
+        private RSAPrivateKey readPrivateKey(File file) throws Exception {
+                String key = new String(Files.readAllBytes(file.toPath()), Charset.defaultCharset());
+
+                String privateKeyPEM = key
+                                .replace("-----BEGIN PRIVATE KEY-----", "")
+                                .replaceAll(System.lineSeparator(), "")
+                                .replace("-----END PRIVATE KEY-----", "");
+
+                byte[] encoded = Base64.getDecoder().decode(privateKeyPEM);
+
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+                PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(encoded);
+                return (RSAPrivateKey) keyFactory.generatePrivate(keySpec);
+        }
+
+        private static String sign(String plainText, PrivateKey privateKey) throws Exception {
+                Signature privateSignature = Signature.getInstance("SHA256withRSA");
+                privateSignature.initSign(privateKey);
+                privateSignature.update(plainText.getBytes("UTF_8"));
+
+                byte[] signature = privateSignature.sign();
+
+                return Base64.getEncoder().encodeToString(signature);
         }
 
         private void checkRequiredParameterPresent(Map<String, Object> parameterMap, List<String> errors,

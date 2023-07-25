@@ -5,13 +5,10 @@
 
 package com.aws.greengrass;
 
-import javax.annotation.Nullable;
-
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import com.aws.greengrass.util.ProxyUtils;
 import com.aws.greengrass.util.Utils;
-
 import lombok.Builder;
 import lombok.Getter;
 import software.amazon.awssdk.crt.CRT;
@@ -20,6 +17,8 @@ import software.amazon.awssdk.crt.io.ClientBootstrap;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnectionEvents;
 import software.amazon.awssdk.iot.AwsIotMqttConnectionBuilder;
+
+import javax.annotation.Nullable;
 
 public class MqttConnectionHelper {
 

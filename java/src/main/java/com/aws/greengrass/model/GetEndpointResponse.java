@@ -6,8 +6,7 @@
 
 package com.aws.greengrass.model;
 
-public class GetEndpointResponse
-{
+public class GetEndpointResponse {
     public String iotDataEndpoint;
     public String iotCredentialsEndpoint;
 }

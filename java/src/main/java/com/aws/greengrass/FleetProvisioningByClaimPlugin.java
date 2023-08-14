@@ -319,7 +319,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         private static String sign(String plainText, PrivateKey privateKey) throws Exception {
                 Signature privateSignature = Signature.getInstance("SHA256withRSA");
                 privateSignature.initSign(privateKey);
-                privateSignature.update(plainText.getBytes("UTF_8"));
+                privateSignature.update(plainText.getBytes("UTF8"));
 
                 byte[] signature = privateSignature.sign();
 

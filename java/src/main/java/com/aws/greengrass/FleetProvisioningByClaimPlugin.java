@@ -30,6 +30,7 @@ import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -38,7 +39,7 @@ import java.nio.file.Paths;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.Signature;
-import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.PrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -301,7 +302,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 return result;
         }
 
-        private RSAPrivateKey readPrivateKey(File file) throws Exception {
+        private PrivateKey readPrivateKey(File file) throws Exception {
                 String key = new String(Files.readAllBytes(file.toPath()), Charset.defaultCharset());
 
                 String privateKeyPEM = key
@@ -311,19 +312,19 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 byte[] encoded = Base64.getDecoder().decode(privateKeyPEM);
 
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+                KeyFactory keyFactory = KeyFactory.getInstance("EC");
                 PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(encoded);
-                return (RSAPrivateKey) keyFactory.generatePrivate(keySpec);
+                return (PrivateKey) keyFactory.generatePrivate(keySpec);
         }
 
         private static String sign(String plainText, PrivateKey privateKey) throws Exception {
-                Signature privateSignature = Signature.getInstance("SHA256withRSA");
+                Signature privateSignature = Signature.getInstance("SHA256withECDSAinP1363format");
                 privateSignature.initSign(privateKey);
-                privateSignature.update(plainText.getBytes("UTF_8"));
+                privateSignature.update(plainText.getBytes("UTF-8"));
 
                 byte[] signature = privateSignature.sign();
 
-                return Base64.getEncoder().encodeToString(signature);
+                return new BigInteger(1, signature).toString(16);
         }
 
         private void checkRequiredParameterPresent(Map<String, Object> parameterMap, List<String> errors,

@@ -18,6 +18,7 @@ import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException
 import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
+import com.google.gson.Gson;
 import software.amazon.awssdk.crt.CrtRuntimeException;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
@@ -29,23 +30,16 @@ import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.math.BigInteger;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.KeyFactory;
+import java.security.GeneralSecurityException;
 import java.security.PrivateKey;
-import java.security.Signature;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Scanner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
@@ -55,7 +49,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         private static final Logger logger = LogManager.getLogger(FleetProvisioningByClaimPlugin.class);
 
         // Required parameters
-        static final String PROVISION_ENDPOINT = "provisionEndpoint";
+        static final String PROVISION_ENDPOINT_PARAMETER_NAME = "provisionEndpoint";
         static final String PROVISIONING_TEMPLATE_PARAMETER_NAME = "provisioningTemplate";
         static final String CLAIM_CERTIFICATE_PATH_PARAMETER_NAME = "claimCertificatePath";
         static final String CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME = "claimCertificatePrivateKeyPath";
@@ -75,25 +69,33 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
 
+        static final String DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT = "/config/device_config.json";
         static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/auth/prov.cert.pem";
         static final String PRIVATE_KEY_PATH_RELATIVE_TO_ROOT = "/auth/prov.pkey.pem";
 
         private final IotIdentityHelperFactory iotIdentityHelperFactory;
         private final MgmtCloudRouterFactory mgmtCloudRouterFactory;
         private final MqttConnectionHelper mqttConnectionHelper;
+        private final DeviceIdentityHelper deviceIdentityHelper;
 
+        /** Run AWS Fleet provisioning by claim flow.
+         * 
+         */
         public FleetProvisioningByClaimPlugin() {
                 iotIdentityHelperFactory = new IotIdentityHelperFactory();
                 mgmtCloudRouterFactory = new MgmtCloudRouterFactory();
                 mqttConnectionHelper = new MqttConnectionHelper();
+                deviceIdentityHelper = new DeviceIdentityHelper();
         }
 
         FleetProvisioningByClaimPlugin(IotIdentityHelperFactory iotIdentityHelperFactory,
                         MgmtCloudRouterFactory mgmtCloudRouterFactory,
-                        MqttConnectionHelper mqttConnectionHelper) {
+                        MqttConnectionHelper mqttConnectionHelper,
+                        DeviceIdentityHelper deviceIdentityHelper) {
                 this.iotIdentityHelperFactory = iotIdentityHelperFactory;
                 this.mgmtCloudRouterFactory = mgmtCloudRouterFactory;
                 this.mqttConnectionHelper = mqttConnectionHelper;
+                this.deviceIdentityHelper = deviceIdentityHelper;
         }
 
         @Override
@@ -115,7 +117,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 if (parameterMap.get(MQTT_PORT_PARAMETER_NAME) != null) {
                         mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
                 }
-                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT).toString();
+                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
                 String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
                 String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
                 String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
@@ -132,10 +134,10 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String signature = "";
                 String clientId = "";
                 try {
-                        clientId = getClientId();
-                        PrivateKey privKey = readPrivateKey(new File(signKeyPath));
-                        signature = sign(clientId, privKey);
-                } catch (Exception ex) {
+                        clientId = this.deviceIdentityHelper.getClientId();
+                        PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
+                        signature = this.deviceIdentityHelper.sign(clientId, privKey);
+                } catch (GeneralSecurityException | IOException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting claimed cloud endpoint information");
                         throw new InterruptedException();
@@ -241,6 +243,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         private void validateParameters(Map<String, Object> parameterMap) {
                 logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
                 List<String> errors = new ArrayList<>();
+                checkRequiredParameterPresent(parameterMap, errors, PROVISION_ENDPOINT_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
@@ -263,6 +266,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .build();
 
                 nucleusConfiguration.setIotCredentialsEndpoint(iotCredentialEndpoint);
+
+                writeDeviceConfigurationToPath(registerThingResponse,
+                                parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
 
                 // optional parameters
                 Object parameterValue = parameterMap.get(AWS_REGION_PARAMETER_NAME);
@@ -289,43 +295,6 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .build();
         }
 
-        private static String getClientId() {
-                String result = null;
-                String[] cmd  = {"uuid"};
-                try (InputStream inputStream = Runtime.getRuntime().exec(cmd).getInputStream();
-                        Scanner s = new Scanner(inputStream).useDelimiter("\\A")) {
-                    result = s.hasNext() ? s.next() : null;
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-                return result;
-        }
-
-        private PrivateKey readPrivateKey(File file) throws Exception {
-                String key = new String(Files.readAllBytes(file.toPath()), Charset.defaultCharset());
-
-                String privateKeyPEM = key
-                                .replace("-----BEGIN PRIVATE KEY-----", "")
-                                .replaceAll(System.lineSeparator(), "")
-                                .replace("-----END PRIVATE KEY-----", "");
-
-                byte[] encoded = Base64.getDecoder().decode(privateKeyPEM);
-
-                KeyFactory keyFactory = KeyFactory.getInstance("EC");
-                PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(encoded);
-                return (PrivateKey) keyFactory.generatePrivate(keySpec);
-        }
-
-        private static String sign(String plainText, PrivateKey privateKey) throws Exception {
-                Signature privateSignature = Signature.getInstance("SHA256withECDSAinP1363format");
-                privateSignature.initSign(privateKey);
-                privateSignature.update(plainText.getBytes("UTF-8"));
-
-                byte[] signature = privateSignature.sign();
-
-                return new BigInteger(1, signature).toString(16);
-        }
-
         private void checkRequiredParameterPresent(Map<String, Object> parameterMap, List<String> errors,
                         String parameterName) {
                 if (!parameterMap.containsKey(parameterName)
@@ -336,26 +305,49 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
+        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String rootPath) {
+                try {
+                        // Store registerThingResponse.deviceConfiguration to some file in JSON format.
+                        Gson gson = new Gson();
+                        String gsonData = gson.toJson(response.deviceConfiguration);
+
+                        Path confPath = Paths.get(rootPath, DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT);
+                        if (Files.notExists(confPath)) {
+                                Files.createDirectories(confPath.getParent());
+                                Files.createFile(confPath);
+                        }
+                        Files.write(confPath, gsonData.getBytes(StandardCharsets.UTF_8));
+                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
+                                        .ownerWrite(true).build(), confPath);
+                } catch (IOException e) {
+                        logger.atError().log("Caught exception while writing device configuration to file");
+                        throw new DeviceProvisioningRuntimeException("Failed to write device configuration", e);
+                }
+
+        }
+
         private void writeCertificateAndKeyToPath(CreateKeysAndCertificateResponse response, String rootPath) {
                 try {
                         Path certPath = Paths.get(rootPath, DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT);
                         if (Files.notExists(certPath)) {
+                                Files.createDirectories(certPath.getParent());
                                 Files.createFile(certPath);
                         }
                         Files.write(certPath, response.certificatePem.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true).build(),
-                                        certPath);
+                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
+                                        .ownerWrite(true).build(), certPath);
 
                         Path keyPath = Paths.get(rootPath, PRIVATE_KEY_PATH_RELATIVE_TO_ROOT);
                         if (Files.notExists(keyPath)) {
+                                Files.createDirectories(keyPath.getParent());
                                 Files.createFile(keyPath);
                         }
                         Files.write(keyPath, response.privateKey.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true).build(),
-                                        keyPath);
+                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
+                                        .ownerWrite(true).build(), keyPath);
                 } catch (IOException e) {
                         logger.atError().log("Caught exception while writing certificate and private key to file");
-                        throw new RuntimeException(e);
+                        throw new DeviceProvisioningRuntimeException("Failed to write certificate and private key", e);
                 }
         }
 }

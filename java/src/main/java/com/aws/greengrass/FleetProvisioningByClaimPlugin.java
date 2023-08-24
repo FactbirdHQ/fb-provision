@@ -311,7 +311,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         Gson gson = new Gson();
                         String gsonData = gson.toJson(response.deviceConfiguration);
 
-                        Path confPath = Paths.get(rootPath, DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT);
+                        Path confPath = Paths.get(rootPath, DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT);
                         if (Files.notExists(confPath)) {
                                 Files.createDirectories(confPath.getParent());
                                 Files.createFile(confPath);

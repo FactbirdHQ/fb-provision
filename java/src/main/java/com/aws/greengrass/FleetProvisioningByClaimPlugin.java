@@ -19,6 +19,8 @@ import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+
 import software.amazon.awssdk.crt.CrtRuntimeException;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
@@ -267,7 +269,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 nucleusConfiguration.setIotCredentialsEndpoint(iotCredentialEndpoint);
 
-                writeDeviceConfigurationToPath(registerThingResponse,
+                writeDeviceConfigurationToPath(registerThingResponse,iotDataEndpoint, iotCredentialEndpoint,
                                 parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
 
                 // optional parameters
@@ -305,18 +307,26 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
-        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String rootPath) {
+        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint, String iotCredEndpoint, String rootPath) {
                 try {
                         // Store registerThingResponse.deviceConfiguration to some file in JSON format.
-                        Gson gson = new Gson();
-                        String gsonData = gson.toJson(response.deviceConfiguration);
+
+                        JsonObject modifiedDeviceConfiguration = new JsonObject();
+                        modifiedDeviceConfiguration.addProperty("iotDataEndpoint", iotDataEndpoint);
+                        modifiedDeviceConfiguration.addProperty("iotCredEndpoint", iotCredEndpoint);
+
+                        for (Map.Entry<String, String> entry : response.deviceConfiguration.entrySet()) {
+                                modifiedDeviceConfiguration.addProperty(entry.getKey(), entry.getValue());
+                        }
+
+                        String jsonData = modifiedDeviceConfiguration.toString();
 
                         Path confPath = Paths.get(rootPath, DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT);
                         if (Files.notExists(confPath)) {
                                 Files.createDirectories(confPath.getParent());
                                 Files.createFile(confPath);
                         }
-                        Files.write(confPath, gsonData.getBytes(StandardCharsets.UTF_8));
+                        Files.write(confPath, jsonData.getBytes(StandardCharsets.UTF_8));
                         Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
                                         .ownerWrite(true).build(), confPath);
                 } catch (IOException e) {

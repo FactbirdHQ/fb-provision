@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
@@ -162,28 +163,43 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
 
+                                // Connect
                                 MqttClientConnection mgmtConnection = mqttConnectionHelper
                                                 .getMqttConnection(mqttParameterBuilder
                                                                 .endpoint(provisionEndpoint)
                                                                 .clientBootstrap(clientBootstrap).build())) {
 
-                        CompletableFuture<Boolean> connected = mgmtConnection.connect();
-                        FutureExceptionHandler.getFutureAfterCompletion(connected,
-                                        "Caught exception while establishing connection to AWS Iot");
+                                        CompletableFuture<Boolean> connected = mgmtConnection.connect();
+                                        FutureExceptionHandler.getFutureAfterCompletion(connected,
+                                                        "Caught exception while establishing connection to AWS Iot");
 
-                        MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
+                                        boolean success = false;
+                                        while(!success)
+                                        {
+                                                try{
+                                                        MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
 
-                        GetEndpointResponse getEndpointResponse = FutureExceptionHandler
-                                        .getFutureAfterCompletion(mgmtCloudRouter.getEndpoint(clientId, signature),
-                                                        "Caught exception during getting endpoint from mgmt");
+                                                        GetEndpointResponse getEndpointResponse = FutureExceptionHandler
+                                                                        .getFutureAfterCompletion(mgmtCloudRouter.getEndpoint(clientId, signature),
+                                                                                        "Caught exception during getting endpoint from mgmt");
 
-                        provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
-                        provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
+                                                        provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
+                                                        provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
 
-                        // disconnect
-                        CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
-                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                                        "Caught exception while disconnecting");
+                                                        // If we get this far, we've successfully gotten claimed.
+                                                        success = true;
+                                                } catch (Exception e) {
+                                                        logger.atError().log("Didn't receive endpoint. Is the device claimed? Retrying in 15 minuttes.");
+                                                        TimeUnit.MINUTES.sleep(15);
+                                                }
+                                                
+                                        }
+                                        
+                                        // disconnect
+                                        CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
+                                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
+                                                        "Caught exception while disconnecting");
+
                 } catch (CrtRuntimeException | InterruptedException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting claimed cloud endpoint information");

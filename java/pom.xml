@@ -44,6 +44,18 @@
         </resources>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <GG-Plugin-Class>com.aws.greengrass.FleetProvisioningByClaimPlugin</GG-Plugin-Class>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <version>0.8.5</version>
@@ -129,7 +141,7 @@
                     </properties>
                 </configuration>
             </plugin>
-            <plugin>
+            <!-- <plugin>
                 <artifactId>maven-checkstyle-plugin</artifactId>
                 <version>3.1.0</version>
                 <dependencies>
@@ -143,7 +155,7 @@
                     <logViolationsToConsole>true</logViolationsToConsole>
                     <configLocation>codestyle/checkstyle.xml</configLocation>
                     <violationSeverity>warning</violationSeverity>
-                    <maxAllowedViolations>1000</maxAllowedViolations>
+                    <maxAllowedViolations>0</maxAllowedViolations>
                     <skip>${skipTests}</skip>
                 </configuration>
                 <executions>
@@ -155,15 +167,15 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>
-            <!-- <plugin>
+            </plugin> -->
+            <plugin>
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>
                 <version>4.0.0</version>
                 <configuration>
                     <skip>${skipTests}</skip>
                     <effort>Max</effort>
-                    Reports all bugs (other values are medium and max)
+                    <!-- Reports all bugs (other values are medium and max) -->
                     <threshold>Low</threshold>
                     <xmlOutput>true</xmlOutput>
                     <excludeFilterFile>codestyle/findbugs-exclude.xml</excludeFilterFile>
@@ -177,15 +189,14 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin> -->
-            <!-- <plugin>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-pmd-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
                     <analysisCache>true</analysisCache>
-                    Current violations should not be exceeded. Try to decrease these over time
-                    <maxAllowedViolations>9</maxAllowedViolations>
+                    <maxAllowedViolations>0</maxAllowedViolations>
                     <printFailingErrors>true</printFailingErrors>
                     <rulesets>
                         <ruleset>codestyle/pmd-eg-ruleset.xml</ruleset>
@@ -202,7 +213,7 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin> -->
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -284,26 +295,26 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>5.7.0</version>
+            <version>5.8.2</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-junit-jupiter</artifactId>
-            <version>5.4.0</version>
+            <version>4.4.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>5.7.0</version>
+            <version>5.8.2</version>
             <scope>test</scope>
         </dependency>
         <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-params -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
-            <version>5.7.0</version>
+            <version>5.8.2</version>
             <scope>test</scope>
         </dependency>
         <dependency>

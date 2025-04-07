@@ -1,5 +1,5 @@
 {
     "java.compile.nullAnalysis.mode": "automatic",
     "java.checkstyle.configuration": "${workspaceFolder}/java/codestyle/checkstyle.xml",
-    "java.configuration.updateBuildConfiguration": "interactive"
+    "java.configuration.updateBuildConfiguration": "disabled"
 }

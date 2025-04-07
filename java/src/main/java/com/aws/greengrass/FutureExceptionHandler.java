@@ -18,7 +18,7 @@ import java.util.concurrent.TimeoutException;
 public final class FutureExceptionHandler {
     public static final int AWS_IOT_DEFAULT_TIMEOUT_SECONDS = 30;
 
-    private static Logger logger = LogManager.getLogger(FutureExceptionHandler.class);
+    private static final Logger logger = LogManager.getLogger(FutureExceptionHandler.class);
 
     // For PMD warning
     private FutureExceptionHandler() {
@@ -27,35 +27,32 @@ public final class FutureExceptionHandler {
 
     /**
      * Gets the result from future after completion or throws appropriate exception.
-     * 
-     * @param future       {@link Future}
-     * @param errorMessage error message to be shown when future completed
-     *                     exceptionally
-     * @param <T>          The return type of the Future
+     * @param future {@link Future}
+     * @param errorMessage error message to be shown when future completed exceptionally
+     * @param <T> The return type of the Future
      * @return The result of the future
-     * @throws InterruptedException           {@link InterruptedException}
+     * @throws InterruptedException {@link InterruptedException}
      * @throws RetryableProvisioningException {@link RetryableProvisioningException}
      */
-    public static <T> T getFutureAfterCompletion(Future<T> future, String... errorMessage)
+    public static <T> T getFutureAfterCompletion(Future<T> future, String errorMessage)
             throws InterruptedException, RetryableProvisioningException {
         return getFutureAfterCompletion(future, AWS_IOT_DEFAULT_TIMEOUT_SECONDS, errorMessage);
     }
 
     /**
      * Gets the result from future after completion or throws appropriate exception.
-     * 
-     * @param future       {@link Future}
-     * @param timeout      the time to wait for future to complete
-     * @param errorMessage error message to be shown when future completed
-     *                     exceptionally
-     * @param <T>          The return type of the Future
+     * @param future {@link Future}
+     * @param timeout the time to wait for future to complete
+     * @param errorMessage error message to be shown when future completed exceptionally
+     * @param <T> The return type of the Future
      * @return The result of the future
-     * @throws InterruptedException           when thread is interrupted
-     * @throws RetryableProvisioningException when retryable error happens like
-     *                                        timeout
-     * @throws RuntimeException               when any other error happens
+     * @throws InterruptedException when thread is interrupted
+     * @throws RetryableProvisioningException when retryable error happens like timeout
+     * @throws DeviceProvisioningRuntimeException when any other error happens
+     * @throws RuntimeException when any other error happens
      */
-    public static <T> T getFutureAfterCompletion(Future<T> future, int timeout, String... errorMessage)
+    @SuppressWarnings({"PMD.PreserveStackTrace", "PMD.ExceptionAsFlowControl"})
+    public static <T> T getFutureAfterCompletion(Future<T> future, int timeout, String errorMessage)
             throws InterruptedException, RetryableProvisioningException {
         try {
             return future.get(timeout, TimeUnit.SECONDS);
@@ -67,11 +64,12 @@ public final class FutureExceptionHandler {
             } catch (TimeoutException e1) {
                 logger.atWarn().setCause(e1).kv("retryable", true).log(errorMessage);
                 throw new RetryableProvisioningException(e1);
-            } catch (InterruptedException e1) {
-                throw e1;
             } catch (ExecutionException e1) {
                 logger.atError().setCause(e1).log(errorMessage);
-                throw new RuntimeException(e1.getCause());
+                throw new DeviceProvisioningRuntimeException(e1.getCause());
+            } catch (RetryableProvisioningException e1) {
+                logger.atWarn().setCause(e1).kv("retryable", true).log(errorMessage);
+                throw e1;
             }
         } catch (TimeoutException e1) {
             logger.atWarn().setCause(e1).kv("retryable", true).log(errorMessage);
@@ -79,14 +77,11 @@ public final class FutureExceptionHandler {
         }
     }
 
-    @SuppressWarnings("PMD.CollapsibleIfStatements")
     private static void unwrapExecutionException(ExecutionException e)
-            throws TimeoutException, InterruptedException, ExecutionException {
+            throws TimeoutException, InterruptedException, ExecutionException, RetryableProvisioningException {
         Throwable cause = e.getCause();
         if (cause instanceof MqttException) {
-            if (cause.getMessage() != null && cause.getMessage().contains("operation timed out")) {
-                throw new TimeoutException(cause.getMessage());
-            }
+            throw new RetryableProvisioningException(cause);
         }
         if (cause instanceof TimeoutException) {
             throw (TimeoutException) cause;

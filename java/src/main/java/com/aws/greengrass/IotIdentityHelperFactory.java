@@ -12,7 +12,6 @@ public class IotIdentityHelperFactory {
 
     /**
      * Provides a singleton instance of {@link IotIdentityHelper}.
-     * 
      * @param connection Mqtt client connection to AWS IoT
      * @return {@link IotIdentityHelper}
      */

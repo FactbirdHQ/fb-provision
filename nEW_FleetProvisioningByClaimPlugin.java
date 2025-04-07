@@ -10,8 +10,6 @@ import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import com.aws.greengrass.provisioning.DeviceIdentityInterface;
 import com.aws.greengrass.provisioning.ProvisionConfiguration;
-import com.aws.greengrass.provisioning.ProvisionConfiguration.NucleusConfiguration;
-import com.aws.greengrass.provisioning.ProvisionConfiguration.SystemConfiguration;
 import com.aws.greengrass.provisioning.ProvisionContext;
 import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
 import com.aws.greengrass.util.FileSystemPermission;
@@ -30,7 +28,6 @@ import software.amazon.awssdk.iot.iotidentity.model.CreateCertificateFromCsrResp
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -38,8 +35,6 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.security.GeneralSecurityException;
-import java.security.PrivateKey;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -47,7 +42,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 import static com.aws.greengrass.provisioning.ProvisionConfiguration.NucleusConfiguration;
 import static com.aws.greengrass.provisioning.ProvisionConfiguration.SystemConfiguration;
@@ -58,12 +52,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
     private static final Logger logger = LogManager.getLogger(FleetProvisioningByClaimPlugin.class);
 
     // Required parameters
-    static final String PROVISION_ENDPOINT_PARAMETER_NAME = "provisionEndpoint";
     static final String PROVISIONING_TEMPLATE_PARAMETER_NAME = "provisioningTemplate";
     static final String CLAIM_CERTIFICATE_PATH_PARAMETER_NAME = "claimCertificatePath";
     static final String CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME = "claimCertificatePrivateKeyPath";
-    static final String SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME = "signPrivateKeyPath";
     static final String ROOT_CA_PATH_PARAMETER_NAME = "rootCaPath";
+    static final String IOT_DATA_ENDPOINT_PARAMETER_NAME = "iotDataEndpoint";
     static final String ROOT_PATH_PARAMETER_NAME = "rootPath";
     static final String MQTT_PORT_PARAMETER_NAME = "mqttPort";
 
@@ -90,25 +83,17 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
     public static final boolean IS_WINDOWS = System.getProperty("os.name").toLowerCase().contains("wind");
 
     private final IotIdentityHelperFactory iotIdentityHelperFactory;
-    private final MgmtCloudRouterFactory mgmtCloudRouterFactory;
     private final MqttConnectionHelper mqttConnectionHelper;
-    private final DeviceIdentityHelper deviceIdentityHelper;
 
     public FleetProvisioningByClaimPlugin() {
         iotIdentityHelperFactory = new IotIdentityHelperFactory();
-        mgmtCloudRouterFactory = new MgmtCloudRouterFactory();
         mqttConnectionHelper = new MqttConnectionHelper();
-        deviceIdentityHelper = new DeviceIdentityHelper();
     }
 
     FleetProvisioningByClaimPlugin(IotIdentityHelperFactory iotIdentityHelperFactory,
-                                    MgmtCloudRouterFactory mgmtCloudRouterFactory,
-                                    MqttConnectionHelper mqttConnectionHelper,
-                                    DeviceIdentityHelper deviceIdentityHelper) {
+                                   MqttConnectionHelper mqttConnectionHelper) {
         this.iotIdentityHelperFactory = iotIdentityHelperFactory;
-        this.mgmtCloudRouterFactory = mgmtCloudRouterFactory;
         this.mqttConnectionHelper = mqttConnectionHelper;
-        this.deviceIdentityHelper = deviceIdentityHelper;
     }
 
     @Override
@@ -122,25 +107,26 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
         Map<String, Object> parameterMap = provisionContext.getParameterMap();
         // Create a test error logging message, so I can test logging:
-        logger.atInfo().log("\n\n ENTERING STEP: 1. VALIDATING PARAMETERS");
+        logger.atInfo().log("\nFleetProvisioningByClaimPlugin1: updateIdentityConfiguration called");
+        logger.atInfo().log("\nFleetProvisioningByClaimPlugin2: updateIdentityConfiguration called");
+        logger.atInfo().log("FleetProvisioningByClaimPlugin3: updateIdentityConfiguration called");
+        logger.atInfo().log("FleetProvisioningByClaimPlugin4: updateIdentityConfiguration called");
 
         validateParameters(parameterMap);
 
         String certPath = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString();
         String keyPath = parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-        String signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-        // String endpoint = parameterMap.get(IOT_DATA_ENDPOINT_PARAMETER_NAME).toString();
+        String endpoint = parameterMap.get(IOT_DATA_ENDPOINT_PARAMETER_NAME).toString();
         Integer mqttPort = null;
         if (parameterMap.get(MQTT_PORT_PARAMETER_NAME) != null) {
             mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
         }
-        String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
         String csrPath = parameterMap.get(CSR_PATH_PARAMETER_NAME) == null ? null
                 : parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
         String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
         String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
-        // String clientId = parameterMap.get(DEVICE_ID_PARAMETER_NAME) == null ? UUID.randomUUID().toString()
-        //         : parameterMap.get(DEVICE_ID_PARAMETER_NAME).toString();
+        String clientId = parameterMap.get(DEVICE_ID_PARAMETER_NAME) == null ? UUID.randomUUID().toString()
+                : parameterMap.get(DEVICE_ID_PARAMETER_NAME).toString();
         String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
                 : parameterMap.get(PROXY_URL_PARAMETER_NAME).toString();
         String proxyUserName = parameterMap.get(PROXY_USERNAME_PARAMETER_NAME) == null ? null
@@ -153,100 +139,15 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         Map<String, Object> templateParameters =
                 (Map<String, Object>) parameterMap.get(TEMPLATE_PARAMETERS_PARAMETER_NAME);
 
-        logger.atInfo().log("\n\n ENTERING STEP: 2. GETTING CLOUD ENDPOINT INFO");
-
-        String signature = "";
-        String clientId = "";
-        try {
-                clientId = this.deviceIdentityHelper.getClientId();
-                PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
-                signature = this.deviceIdentityHelper.sign(clientId, privKey);
-        } catch (GeneralSecurityException | IOException ex) {
-                logger.atError().setCause(ex)
-                                .log("Exception encountered while getting claimed cloud endpoint information");
-                throw new InterruptedException();
-        }
-       
         MqttConnectionParametersBuilder mqttParameterBuilder =
                 MqttConnectionHelper.MqttConnectionParameters.builder()
                         .certPath(certPath)
                         .keyPath(keyPath)
                         .rootCaPath(rootCaPath)
+                        .endpoint(endpoint)
                         .clientId(clientId)
                         .httpProxyOptions(httpProxyOptions)
                         .mqttPort(mqttPort);
-
-        String provisionedIotDataEndpoint = "";
-        String provisionedIotCredentialsEndpoint = "";
-
-        // Obtain cloud endpoint
-        try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
-                        HostResolver resolver = new HostResolver(eventLoopGroup);
-                        ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
-
-                        // Connect
-                        MqttClientConnection mgmtConnection = mqttConnectionHelper
-                                        .getMqttConnection(mqttParameterBuilder
-                                                        .endpoint(provisionEndpoint)
-                                                        .clientBootstrap(clientBootstrap).build())) {
-
-                                CompletableFuture<Boolean> connected = mgmtConnection.connect();
-                                FutureExceptionHandler.getFutureAfterCompletion(connected,
-                                                "Caught exception while establishing connection to AWS Iot");
-
-                                boolean success = false;
-                                while(!success)
-                                {
-                                        try{
-                                                MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
-
-                                                GetEndpointResponse getEndpointResponse = FutureExceptionHandler
-                                                                .getFutureAfterCompletion(mgmtCloudRouter.getEndpoint(clientId, signature),
-                                                                                "Caught exception during getting endpoint from mgmt");
-
-                                                provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
-                                                provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
-
-                                                // If we get this far, we've successfully gotten claimed.
-                                                success = true;
-                                        } catch (Exception e) {
-                                                logger.atError().log("Didn't receive endpoint. Is the device claimed? Retrying in 15 minuttes.");
-                                                TimeUnit.MINUTES.sleep(15);
-                                        }
-                                        
-                                }
-                                
-                                // disconnect
-                                CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
-                                FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                                                "Caught exception while disconnecting");
-
-        } catch (CrtRuntimeException | InterruptedException ex) {
-                logger.atError().setCause(ex)
-                                .log("Exception encountered while getting claimed cloud endpoint information");
-                throw ex;
-        }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        logger.atInfo().log("\n\n EXITED CORRECTLY: TERMINATING PROGRAM");
-        // Exit the program with status code 1
-        boolean someCondition = true; // Declare at top level to avoid unreachable code
-        if (someCondition) {
-            System.exit(1);
-        }
 
 
         try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
@@ -335,13 +236,17 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
     private void validateParameters(Map<String, Object> parameterMap) {
         logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
         List<String> errors = new ArrayList<>();
-        checkRequiredParameterPresent(parameterMap, errors, PROVISION_ENDPOINT_PARAMETER_NAME);
         checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
         checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
         checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
-        checkRequiredParameterPresent(parameterMap, errors, SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME);
         checkRequiredParameterPresent(parameterMap, errors, ROOT_CA_PATH_PARAMETER_NAME);
+        checkRequiredParameterPresent(parameterMap, errors, IOT_DATA_ENDPOINT_PARAMETER_NAME);
+        checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
         checkRequiredParameterPresent(parameterMap, errors, ROOT_PATH_PARAMETER_NAME);
+        if (!(parameterMap.get(CSR_PATH_PARAMETER_NAME) == null
+                || Utils.isEmpty(parameterMap.get(CSR_PATH_PARAMETER_NAME).toString()))) {
+            checkRequiredParameterPresent(parameterMap, errors, CSR_PRIVATE_KEY_PATH_PARAMETER_NAME);
+        }
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(errors.toString());
@@ -350,8 +255,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
     private ProvisionConfiguration createProvisioningConfiguration(Map<String, Object> parameterMap,
                                                              RegisterThingResponse registerThingResponse) {
-                                                            
-        String IOT_DATA_ENDPOINT_PARAMETER_NAME="FIX";
+
         NucleusConfiguration nucleusConfiguration = NucleusConfiguration.builder()
                 .iotDataEndpoint(parameterMap.get(IOT_DATA_ENDPOINT_PARAMETER_NAME).toString())
                 .build();

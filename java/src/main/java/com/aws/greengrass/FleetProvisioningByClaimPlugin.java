@@ -20,12 +20,14 @@ import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-
 import software.amazon.awssdk.crt.CrtRuntimeException;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
+import software.amazon.awssdk.crt.io.ClientTlsContext;
 import software.amazon.awssdk.crt.io.EventLoopGroup;
 import software.amazon.awssdk.crt.io.HostResolver;
+import software.amazon.awssdk.crt.io.TlsContext;
+import software.amazon.awssdk.crt.io.TlsContextOptions;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
@@ -129,8 +131,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 : parameterMap.get(PROXY_USERNAME_PARAMETER_NAME).toString();
                 String proxyPassword = parameterMap.get(PROXY_PASSWORD_PARAMETER_NAME) == null ? null
                                 : parameterMap.get(PROXY_PASSWORD_PARAMETER_NAME).toString();
+                TlsContext proxyTlsContext = new ClientTlsContext(getTlsContextOptions(rootCaPath));
                 HttpProxyOptions httpProxyOptions = MqttConnectionHelper.getHttpProxyOptions(proxyUrl, proxyUserName,
-                                proxyPassword);
+                                proxyPassword, proxyTlsContext);
                 Map<String, Object> templateParameters = (Map<String, Object>) parameterMap
                                 .get(TEMPLATE_PARAMETERS_PARAMETER_NAME);
 
@@ -174,9 +177,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                                         "Caught exception while establishing connection to AWS Iot");
 
                                         boolean success = false;
-                                        while(!success)
-                                        {
-                                                try{
+                                        while (!success) {
+                                                try {
                                                         MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
 
                                                         GetEndpointResponse getEndpointResponse = FutureExceptionHandler
@@ -258,6 +260,12 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
+        
+        private static TlsContextOptions getTlsContextOptions(String rootCaPath) {
+                return Utils.isNotEmpty(rootCaPath)
+                        ? TlsContextOptions.createDefaultClient().withCertificateAuthorityFromPath(null, rootCaPath)
+                        : TlsContextOptions.createDefaultClient();
+        }
         private void validateParameters(Map<String, Object> parameterMap) {
                 logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
                 List<String> errors = new ArrayList<>();

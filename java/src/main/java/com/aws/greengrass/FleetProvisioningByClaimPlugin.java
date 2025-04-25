@@ -18,6 +18,7 @@ import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException
 import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
+import com.aws.greengrass.pkcs.pkcsProvider;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import software.amazon.awssdk.crt.CrtRuntimeException;
@@ -143,6 +144,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         clientId = this.deviceIdentityHelper.getClientId();
                         PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
                         signature = this.deviceIdentityHelper.sign(clientId, privKey);
+                        logger.atInfo().kv("clientId", clientId)
+                                                 .kv("signature", signature)
+                                                 .log("Generated device signature");
                 } catch (GeneralSecurityException | IOException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting claimed cloud endpoint information");
@@ -151,8 +155,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 MqttConnectionParametersBuilder mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
                                 .builder()
-                                .certPath(certPath)
-                                .keyPath(keyPath)
+                                .certificateUri(certPath)
+                                .privKeyUri(keyPath)
                                 .rootCaPath(rootCaPath)
                                 .clientId(clientId)
                                 .httpProxyOptions(httpProxyOptions)
@@ -161,6 +165,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotDataEndpoint = "";
                 String provisionedIotCredentialsEndpoint = "";
 
+                // Initialize PKCS11 provider
+                pkcsProvider pkcsProviderInstance = new pkcsProvider();
+
                 // Obtain cloud endpoint
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
@@ -168,9 +175,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                                 // Connect
                                 MqttClientConnection mgmtConnection = mqttConnectionHelper
-                                                .getMqttConnection(mqttParameterBuilder
+                                                .getMqttConnectionPkcs(mqttParameterBuilder
                                                                 .endpoint(provisionEndpoint)
-                                                                .clientBootstrap(clientBootstrap).build())) {
+                                                                .clientBootstrap(clientBootstrap).build(), pkcsProviderInstance)) {
 
                                         CompletableFuture<Boolean> connected = mgmtConnection.connect();
                                         FutureExceptionHandler.getFutureAfterCompletion(connected,
@@ -187,6 +194,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                                                         provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
                                                         provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
+                                                        logger.atInfo().kv("provisionedIotDataEndpoint", provisionedIotDataEndpoint)
+                                                                                .kv("provisionedIotCredentialsEndpoint", provisionedIotCredentialsEndpoint)
+                                                                                .log("Successfully obtained cloud endpoints");
 
                                                         // If we get this far, we've successfully gotten claimed.
                                                         success = true;
@@ -214,9 +224,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
 
                                 MqttClientConnection connection = mqttConnectionHelper
-                                                .getMqttConnection(mqttParameterBuilder
+                                                .getMqttConnectionPkcs(mqttParameterBuilder
                                                                 .endpoint(provisionedIotDataEndpoint)
-                                                                .clientBootstrap(clientBootstrap).build())) {
+                                                                .clientBootstrap(clientBootstrap).build(), pkcsProviderInstance)) {
 
                         // Setup new connection to `provisionedIotDataEndpoint`
                         CompletableFuture<Boolean> connected = connection.connect();
@@ -385,3 +395,10 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 }
+
+
+                // // log end of execution and throw a interrupted exception to exit the program
+                // boolean logEndOfExecution = true;
+                // if (logEndOfExecution) {
+                //         throw new InterruptedException("Succesfully failed. Exiting the program\n\n\n\n\n");
+                // }

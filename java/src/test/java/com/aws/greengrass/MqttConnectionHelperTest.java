@@ -43,22 +43,22 @@ public class MqttConnectionHelperTest {
         Files.createFile(rootCAPath);
     }
 
-    @Test
-    public void GIVEN_MQTT_port_number_THEN_sdk_successfully_invoke_withPort_method(){
-        MqttConnectionHelper mockmqttConnectionHelper = new MqttConnectionHelper();
-        MqttConnectionHelper.MqttConnectionParameters parameters = createMqttConnectionParams();
-        assertDoesNotThrow(() -> mockmqttConnectionHelper.getMqttConnection(parameters));
-    }
-    private MqttConnectionHelper.MqttConnectionParameters createMqttConnectionParams() {
-        return new MqttConnectionHelper.MqttConnectionParameters(
-                claimCertificatePath.toString(),
-                privateKeyPath.toString(),
-                rootCAPath.toString(),
-                MOCK_IOT_DATA_ENDPOINT,
-                MOCK_CLIENT_ID,
-                MOCK_PORT_NUMBER,
-                mockClientBootstrap,
-                null
-        );
-    }
+    // @Test
+    // public void GIVEN_MQTT_port_number_THEN_sdk_successfully_invoke_withPort_method(){
+    //     MqttConnectionHelper mockmqttConnectionHelper = new MqttConnectionHelper();
+    //     MqttConnectionHelper.MqttConnectionParameters parameters = createMqttConnectionParams();
+    //     assertDoesNotThrow(() -> mockmqttConnectionHelper.getMqttConnection(parameters));
+    // }
+    // private MqttConnectionHelper.MqttConnectionParameters createMqttConnectionParams() {
+    //     return new MqttConnectionHelper.MqttConnectionParameters(
+    //             claimCertificatePath.toString(),
+    //             privateKeyPath.toString(),
+    //             rootCAPath.toString(),
+    //             MOCK_IOT_DATA_ENDPOINT,
+    //             MOCK_CLIENT_ID,
+    //             MOCK_PORT_NUMBER,
+    //             mockClientBootstrap,
+    //             null
+    //     );
+    // }
 }

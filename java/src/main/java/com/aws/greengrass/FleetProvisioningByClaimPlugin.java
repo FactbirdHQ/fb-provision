@@ -9,6 +9,7 @@ import com.aws.greengrass.MqttConnectionHelper.MqttConnectionParameters.MqttConn
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import com.aws.greengrass.model.GetEndpointResponse;
+import com.aws.greengrass.pkcs.PkcsProvider;
 import com.aws.greengrass.provisioning.DeviceIdentityInterface;
 import com.aws.greengrass.provisioning.ProvisionConfiguration;
 import com.aws.greengrass.provisioning.ProvisionConfiguration.NucleusConfiguration;
@@ -18,7 +19,6 @@ import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException
 import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
-import com.aws.greengrass.pkcs.pkcsProvider;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import software.amazon.awssdk.crt.CrtRuntimeException;
@@ -29,6 +29,7 @@ import software.amazon.awssdk.crt.io.EventLoopGroup;
 import software.amazon.awssdk.crt.io.HostResolver;
 import software.amazon.awssdk.crt.io.TlsContext;
 import software.amazon.awssdk.crt.io.TlsContextOptions;
+import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
@@ -166,7 +167,19 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotCredentialsEndpoint = "";
 
                 // Initialize PKCS11 provider
-                pkcsProvider pkcsProviderInstance = new pkcsProvider();
+                PkcsProvider pkcsProviderInstance = new PkcsProvider();
+
+                TlsContextPkcs11Options options = null;
+                try {
+                        String certificateContent = pkcsProviderInstance.getCertificateInPEM("claimkeylabel");
+                        options = new TlsContextPkcs11Options(pkcsProviderInstance.getPkcs11Lib())
+                        .withSlotId(1)
+                        .withUserPin("myuserpin")
+                        .withPrivateKeyObjectLabel("claimkeylabel")
+                        .withCertificateFileContents(certificateContent); 
+                } catch (Exception e) {
+                        throw new RuntimeException("Failed to initialize PKCS11 provider", e);
+                }
 
                 // Obtain cloud endpoint
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
@@ -177,7 +190,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 MqttClientConnection mgmtConnection = mqttConnectionHelper
                                                 .getMqttConnectionPkcs(mqttParameterBuilder
                                                                 .endpoint(provisionEndpoint)
-                                                                .clientBootstrap(clientBootstrap).build(), pkcsProviderInstance)) {
+                                                                .clientBootstrap(clientBootstrap).build(), options)) {
 
                                         CompletableFuture<Boolean> connected = mgmtConnection.connect();
                                         FutureExceptionHandler.getFutureAfterCompletion(connected,
@@ -218,6 +231,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         throw ex;
                 }
 
+                String certificateTest = pkcsProviderInstance.getCertificateInPEM("claimkeylabel"); 
+                logger.atInfo().log("Successfully got certificate from PKCS11 provider:\n" + certificateTest + "\n");
+
+                pkcsProviderInstance.writeCertificateToStore("testlabel", certificateTest);
+
+
+                exitprogram();
+
                 // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
@@ -226,7 +247,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 MqttClientConnection connection = mqttConnectionHelper
                                                 .getMqttConnectionPkcs(mqttParameterBuilder
                                                                 .endpoint(provisionedIotDataEndpoint)
-                                                                .clientBootstrap(clientBootstrap).build(), pkcsProviderInstance)) {
+                                                                .clientBootstrap(clientBootstrap).build(), options)) {
 
                         // Setup new connection to `provisionedIotDataEndpoint`
                         CompletableFuture<Boolean> connected = connection.connect();
@@ -240,7 +261,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                         "Caught exception during PublishCreateKeysAndCertificate");
 
                         writeCertificateAndKeyToPath(response, parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
-
+                        
                         HashMap<String, String> parameterHashMap = new HashMap<>();
                         if (templateParameters != null) {
                                 templateParameters.forEach((k, v) -> parameterHashMap.put(k, v.toString()));
@@ -276,6 +297,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         ? TlsContextOptions.createDefaultClient().withCertificateAuthorityFromPath(null, rootCaPath)
                         : TlsContextOptions.createDefaultClient();
         }
+
         private void validateParameters(Map<String, Object> parameterMap) {
                 logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
                 List<String> errors = new ArrayList<>();
@@ -394,11 +416,13 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         throw new DeviceProvisioningRuntimeException("Failed to write certificate and private key", e);
                 }
         }
+
+        private void exitprogram() throws InterruptedException {
+                // log end of execution and throw a interrupted exception to exit the program
+                boolean logendofexecution = true;
+                if (logendofexecution) {
+                        throw new InterruptedException("succesfully failed. exiting the program\n\n\n\n\n");
+                }
+        }
 }
 
-
-                // // log end of execution and throw a interrupted exception to exit the program
-                // boolean logEndOfExecution = true;
-                // if (logEndOfExecution) {
-                //         throw new InterruptedException("Succesfully failed. Exiting the program\n\n\n\n\n");
-                // }

@@ -1,8 +1,11 @@
 package com.aws.greengrass.pkcs;
 
+import software.amazon.awssdk.crt.io.Pkcs11Lib;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
+import java.security.cert.CertificateFactory;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -13,18 +16,18 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.util.Base64;
 import java.security.spec.PKCS8EncodedKeySpec;
-import software.amazon.awssdk.crt.io.Pkcs11Lib;
+import java.util.Base64;
 
-public class pkcsProvider {
+
+public class PkcsProvider {
     private KeyStore keyStore;
     private String libraryPath = "/usr/lib/pkcs11/libtpm2_pkcs11.so"; // Default PKCS#11 library path
     private String password = "myuserpin"; // Default pin/password
     private String slotIndex = "1"; // Default slot index
     private Pkcs11Lib pkcs11Lib;
     
-    public pkcsProvider() {
+    public PkcsProvider() {
         try {
             initializePKCS11();
             initializePkcs11Lib();
@@ -35,7 +38,7 @@ public class pkcsProvider {
 
     }
     
-    public pkcsProvider(String libraryPath, String password, String slotIndex) {
+    public PkcsProvider(String libraryPath, String password, String slotIndex) {
         try {
             this.libraryPath = libraryPath;
             this.password = password;
@@ -55,6 +58,17 @@ public class pkcsProvider {
             libraryPath, slotIndex
         );
         
+        // Write the configuration to a file
+        File configFile = new File("/data/greengrass/config/pkcs.cfg");
+        // Create parent directories if they don't exist
+        configFile.getParentFile().mkdirs();
+
+        // Write configuration to the file
+        java.nio.file.Files.write(
+            configFile.toPath(),
+            config.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
         // Load the SunPKCS11 provider
         Provider provider = Security.getProvider("SunPKCS11");
         if (provider == null) {
@@ -64,7 +78,7 @@ public class pkcsProvider {
 
         // ByteArrayInputStream configStream = new ByteArrayInputStream(config.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         // Configure the provider with our specific configuration
-        Provider configuredProvider = provider.configure("/data/pkcs.cfg");
+        Provider configuredProvider = provider.configure("/data/greengrass/config/pkcs.cfg");
         
         // Add the configured provider to the security providers list
         Security.addProvider(configuredProvider);
@@ -91,11 +105,11 @@ public class pkcsProvider {
         }
     }
 
-    public String getCertificateInPEM(String alias) {
+    public String getCertificateInPEM(String label) {
         try {
-            X509Certificate certificate = getCertificate(alias);
+            X509Certificate certificate = getCertificate(label);
             if (certificate == null) {
-                throw new RuntimeException("Certificate not found for alias: " + alias);
+                throw new RuntimeException("Certificate not found for label: " + label);
             }
 
             StringBuilder pem = new StringBuilder();
@@ -136,6 +150,37 @@ public class pkcsProvider {
             return (PrivateKey) keyStore.getKey(alias, password.toCharArray());
         } catch (KeyStoreException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
             throw new RuntimeException("Failed to get private key", e);
+        }
+    }
+
+    public void writeCertificateToStore(String label, String pemCertificate) {
+    try {
+        if (pemCertificate == null || pemCertificate.trim().isEmpty()) {
+            throw new IllegalArgumentException("PEM certificate string cannot be null or empty");
+        }
+
+        // Clean the PEM string by removing the header, footer, and any extra whitespace
+        String cleanedPem = pemCertificate
+                .replace("-----BEGIN CERTIFICATE-----", "")
+                .replace("-----END CERTIFICATE-----", "")
+                .replaceAll("\\s", ""); // Remove all whitespace
+
+        if (cleanedPem.isEmpty()) {
+            throw new IllegalArgumentException("PEM certificate string is invalid after cleaning");
+        }
+
+        // Decode the cleaned PEM string into bytes
+        byte[] decodedBytes = Base64.getDecoder().decode(cleanedPem);
+
+        // Parse the decoded bytes into an X509Certificate
+        CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+        ByteArrayInputStream certInputStream = new ByteArrayInputStream(decodedBytes);
+        X509Certificate certificate = (X509Certificate) certFactory.generateCertificate(certInputStream);
+
+        // Add the certificate to the keystore under the provided label
+        keyStore.setCertificateEntry(label, certificate);
+    } catch (Exception e) {
+            throw new RuntimeException("Failed to write certificate to PKCS#11 store", e);
         }
     }
 

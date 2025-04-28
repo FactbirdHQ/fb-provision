@@ -15,11 +15,10 @@ import software.amazon.awssdk.crt.CRT;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
 import software.amazon.awssdk.crt.io.TlsContext;
+import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnectionEvents;
 import software.amazon.awssdk.iot.AwsIotMqttConnectionBuilder;
-import com.aws.greengrass.pkcs.pkcsProvider;
-import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -86,54 +85,43 @@ public class MqttConnectionHelper {
         }
     }
 
-        /**
-     * Create mqtt connection using the given Pkcs11URI's, and endpoint.
+    /**
+     * Create mqtt connection using the given TlsContextPkcs11Option's, and endpoint.
      * @param mqttConnectionParameters {@link MqttConnectionParameters}
      * @return {@link MqttClientConnection}
      */
-    public MqttClientConnection getMqttConnectionPkcs(MqttConnectionParameters mqttConnectionParameters, pkcsProvider pkcsProviderInstance) {
-        String certificateContent = pkcsProviderInstance.getCertificateInPEM("claimkeylabel");
+    public MqttClientConnection getMqttConnectionPkcs(MqttConnectionParameters mqttConnectionParameters, TlsContextPkcs11Options tlsOptions) {
+        try (AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(tlsOptions)
+                .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
+                .withEndpoint(mqttConnectionParameters.getEndpoint())
+                .withClientId(mqttConnectionParameters.getClientId())
+                .withCleanSession(true)
+                .withBootstrap(mqttConnectionParameters.getClientBootstrap())
+                .withConnectionEventCallbacks(callbacks)) {
 
-        try (TlsContextPkcs11Options options = new TlsContextPkcs11Options(pkcsProviderInstance.getPkcs11Lib())
-                .withSlotId(1)
-                .withUserPin("myuserpin")
-                .withPrivateKeyObjectLabel("claimkeylabel")
-                .withCertificateFileContents(certificateContent)) {
-            // create TLS options thing with Tls options
-            try (AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(options)
-                    .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
-                    .withEndpoint(mqttConnectionParameters.getEndpoint())
-                    .withClientId(mqttConnectionParameters.getClientId())
-                    .withCleanSession(true)
-                    .withBootstrap(mqttConnectionParameters.getClientBootstrap())
-                    .withConnectionEventCallbacks(callbacks)) {
-
-                if (mqttConnectionParameters.getMqttPort() != null) {
-                    Class<?> classObj = builder.getClass();
+            if (mqttConnectionParameters.getMqttPort() != null) {
+                Class<?> classObj = builder.getClass();
+                try {
+                    Method method = classObj.getDeclaredMethod("withPort", int.class);
+                    method.invoke(builder, mqttConnectionParameters.getMqttPort());
+                } catch (NoSuchMethodException e) {
                     try {
-                        Method method = classObj.getDeclaredMethod("withPort", int.class);
-                        method.invoke(builder, mqttConnectionParameters.getMqttPort());
-                    } catch (NoSuchMethodException e) {
-                        try {
-                            Method method = classObj.getDeclaredMethod("withPort", short.class);
-                            method.invoke(builder, mqttConnectionParameters.getMqttPort().shortValue());
-                        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ex) {
-                            logger.atWarn().log("Can not successfully use port: "
-                                    + mqttConnectionParameters.getMqttPort().shortValue(), ex);
-                        }
-                    } catch (IllegalAccessException | InvocationTargetException e) {
+                        Method method = classObj.getDeclaredMethod("withPort", short.class);
+                        method.invoke(builder, mqttConnectionParameters.getMqttPort().shortValue());
+                    } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ex) {
                         logger.atWarn().log("Can not successfully use port: "
-                                + mqttConnectionParameters.getMqttPort().intValue(), e);
+                                + mqttConnectionParameters.getMqttPort().shortValue(), ex);
                     }
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    logger.atWarn().log("Can not successfully use port: "
+                            + mqttConnectionParameters.getMqttPort().intValue(), e);
                 }
-                if (mqttConnectionParameters.getHttpProxyOptions() != null) {
-                    builder.withHttpProxyOptions(mqttConnectionParameters.getHttpProxyOptions());
-                }
-                return builder.build();
             }
+            if (mqttConnectionParameters.getHttpProxyOptions() != null) {
+                builder.withHttpProxyOptions(mqttConnectionParameters.getHttpProxyOptions());
+            }
+            return builder.build();
         }
-
-
     }
 
 

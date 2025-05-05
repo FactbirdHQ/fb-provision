@@ -1,31 +1,38 @@
 package com.aws.greengrass.pkcs;
 
+import com.aws.greengrass.logging.api.Logger;
+import com.aws.greengrass.logging.impl.LogManager;
 import software.amazon.awssdk.crt.io.Pkcs11Lib;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.security.cert.CertificateFactory;
+import java.math.BigInteger;
+import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.Provider;
 import java.security.Security;
+import java.security.Signature;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 
 
 public class PkcsProvider {
+    private final Logger logger = LogManager.getLogger(PkcsProvider.class);
     private KeyStore keyStore;
     private String libraryPath = "/usr/lib/pkcs11/libtpm2_pkcs11.so"; // Default PKCS#11 library path
     private String password = "myuserpin"; // Default pin/password
     private String slotIndex = "1"; // Default slot index
     private Pkcs11Lib pkcs11Lib;
+    private Provider pkcs11Provider;
     
     public PkcsProvider() {
         try {
@@ -82,6 +89,11 @@ public class PkcsProvider {
         
         // Add the configured provider to the security providers list
         Security.addProvider(configuredProvider);
+
+        pkcs11Provider = configuredProvider;
+        if (pkcs11Provider == null) {
+            throw new NoSuchAlgorithmException("Failed to load SunPKCS11 provider");
+        }
     }
     
     private void loadKeyStore() {
@@ -153,6 +165,7 @@ public class PkcsProvider {
         }
     }
 
+    // The issue with this function can be found in ./errormessage.log
     public void writeCertificateToStore(String label, String pemCertificate) {
     try {
         if (pemCertificate == null || pemCertificate.trim().isEmpty()) {
@@ -204,6 +217,10 @@ public class PkcsProvider {
         return pkcs11Lib;
     }
 
+    public synchronized Provider getPkcs11Provider() {
+        return pkcs11Provider;
+    }
+
     public Certificate[] getCertificateChain(String alias) {
         try {
             return keyStore.getCertificateChain(alias);
@@ -211,4 +228,63 @@ public class PkcsProvider {
             throw new RuntimeException("Failed to get certificate chain", e);
         }
     }
+
+    // Attempt at signing data using the private key from TPM
+    public String sign(String plainText, String label) throws GeneralSecurityException, IOException {
+        try {
+            // Retrieve the private key from the PKCS#11 keystore
+            PrivateKey privateKey = getPrivateKey(label);
+            if (privateKey == null) {
+                throw new RuntimeException("Private key not found for label: " + label);
+            }
+            logger.atInfo().log("Signing data with private key for label: " + label); 
+
+            // Get the provider from the private key
+            Provider provider = getPkcs11Provider();    
+            if (provider == null) {
+                    throw new RuntimeException("Could not find SunPKCS11 provider");
+            }
+
+            logger.atInfo().log("Listing supported Signature algorithms by provider: %s", provider.getName());
+            for (Provider.Service service : provider.getServices()) {
+                if ("Signature".equalsIgnoreCase(service.getType())) {
+                    logger.atInfo().log("Supported Signature:" + service.getAlgorithm());
+                }
+            }
+            
+            Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", provider);
+            signature.initSign(privateKey);
+
+            signature.update(plainText.getBytes("UTF-8"));
+
+            // Perform the signing operation
+            byte[] signedData = signature.sign();
+
+            // Convert the signature to a hexadecimal string
+            return new BigInteger(1, signedData).toString(16);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to sign data using TPM: " + e.getMessage(), e);
+        }
+    }
+
+    public void close() {
+        try {
+            // Close the PKCS#11 library if initialized
+            closePkcs11Lib();
+
+            // Clear the KeyStore reference
+            keyStore = null;
+
+            // Optionally, remove the PKCS#11 provider from the Security list
+            Provider provider = Security.getProvider("SunPKCS11");
+            if (provider != null) {
+                Security.removeProvider(provider.getName());
+            }
+
+            logger.atInfo().log("PkcsProvider resources have been released.");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to close PkcsProvider resources", e);
+        }
+    }
+
 }

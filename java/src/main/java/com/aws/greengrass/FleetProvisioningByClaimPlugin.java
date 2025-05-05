@@ -31,6 +31,7 @@ import software.amazon.awssdk.crt.io.TlsContext;
 import software.amazon.awssdk.crt.io.TlsContextOptions;
 import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
+import software.amazon.awssdk.iot.iotidentity.model.CreateCertificateFromCsrResponse;
 import software.amazon.awssdk.iot.iotidentity.model.CreateKeysAndCertificateResponse;
 import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
@@ -40,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
 import java.security.PrivateKey;
 import java.util.ArrayList;
@@ -72,6 +74,10 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String PROXY_URL_PARAMETER_NAME = "proxyUrl";
         static final String PROXY_USERNAME_PARAMETER_NAME = "proxyUsername";
         static final String PROXY_PASSWORD_PARAMETER_NAME = "proxyPassword";
+         
+        static final String CSR_PATH_PARAMETER_NAME = "csrPath";
+        static final String CSR_PRIVATE_KEY_PATH_PARAMETER_NAME = "csrPrivateKeyPath";
+
 
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
@@ -125,6 +131,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
                 }
                 String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
+                String csrPath = parameterMap.get(CSR_PATH_PARAMETER_NAME) == null ? null
+                        : parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
                 String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
                 String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
                 String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
@@ -141,18 +149,27 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 String signature = "";
                 String clientId = "";
+
+
+
+                PkcsProvider pkcsProviderInstance = new PkcsProvider();
+
                 try {
                         clientId = this.deviceIdentityHelper.getClientId();
                         PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
                         signature = this.deviceIdentityHelper.sign(clientId, privKey);
-                        logger.atInfo().kv("clientId", clientId)
-                                                 .kv("signature", signature)
-                                                 .log("Generated device signature");
+                        logger.atInfo().log("GENERATED DEVICE SIGNATURE #1:\nclientId:" + clientId + "\nsignature:" + signature + "\n\n");
+
+                        // Not working, awaiting prober key placement
+                        // String signature2 = pkcsProviderInstance.sign(clientId, "claimkeylabel");
+                        // logger.atInfo().log("GENERATED DEVICE SIGNATURE #2:\nclientId:" + clientId + "\nsignature2:" + signature2 + "\n\n");
+  
                 } catch (GeneralSecurityException | IOException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting claimed cloud endpoint information");
                         throw new InterruptedException();
                 }
+
 
                 MqttConnectionParametersBuilder mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
                                 .builder()
@@ -167,7 +184,6 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotCredentialsEndpoint = "";
 
                 // Initialize PKCS11 provider
-                PkcsProvider pkcsProviderInstance = new PkcsProvider();
 
                 TlsContextPkcs11Options options = null;
                 try {
@@ -231,13 +247,6 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         throw ex;
                 }
 
-                String certificateTest = pkcsProviderInstance.getCertificateInPEM("claimkeylabel"); 
-                logger.atInfo().log("Successfully got certificate from PKCS11 provider:\n" + certificateTest + "\n");
-
-                pkcsProviderInstance.writeCertificateToStore("testlabel", certificateTest);
-
-
-                exitprogram();
 
                 // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
@@ -255,24 +264,62 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                         "Caught exception while establishing connection to AWS Iot");
 
                         IotIdentityHelper iotIdentityHelper = iotIdentityHelperFactory.getInstance(connection);
-                        CreateKeysAndCertificateResponse response;
-                        response = FutureExceptionHandler.getFutureAfterCompletion(
-                                        iotIdentityHelper.createKeysAndCertificate(),
-                                        "Caught exception during PublishCreateKeysAndCertificate");
 
-                        writeCertificateAndKeyToPath(response, parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
-                        
+                        String certificateOwnershipToken;
+                        if (csrPath == null || Utils.isEmpty(csrPath)) {
+                                logger.atInfo().log("Provisioning with certificates from filespaths");
+                                CreateKeysAndCertificateResponse response;
+                                response = FutureExceptionHandler.getFutureAfterCompletion(
+                                                iotIdentityHelper.createKeysAndCertificate(),
+                                                "Caught exception during PublishCreateKeysAndCertificate");
+
+                                writeCertificateAndKeyToPath(response, parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+                                addCertificateAndKeyToStore(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+                                                                                
+                                certificateOwnershipToken = response.certificateOwnershipToken;
+                        } else {
+                                logger.atInfo().log("Provisioning with CSR flow");
+                                String csrFilePath = parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
+                                String csrPrivateKeyPath = parameterMap.get(CSR_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
+                                
+
+                                String csr;
+                                try {
+                                        Path csrFile = Paths.get(csrFilePath);
+                                        csr = new String(Files.readAllBytes(csrFile), StandardCharsets.UTF_8);
+                                } catch (IOException | SecurityException ex) {
+                                        logger.atError().setCause(ex).log("Caught exception while reading the CSR file");
+                                        throw new DeviceProvisioningRuntimeException(
+                                        "Failed to read CSR file: " + csrFilePath, ex);
+                                }
+                                CreateCertificateFromCsrResponse response;
+                                response = FutureExceptionHandler.getFutureAfterCompletion(
+                                        iotIdentityHelper.createCertificateFromCsr(csr),
+                                        "Caught exception during PublishCreateCertificateFromCsr");
+                                logger.atInfo().log("Successfully Executed CSR flow, got answer back from AWS:\n" + response.toString() + "\n");
+
+                                String rootPath = parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString();
+                                writeCertificate(response.certificatePem, rootPath);
+
+                                copyFile(csrPrivateKeyPath, rootPath + PRIVATE_KEY_PATH_RELATIVE_TO_ROOT);
+                                // setFilePermissions(csrPrivateKeyPath);
+                                logger.atInfo().log("Should've written to " + csrFilePath);
+                                logger.atInfo().log("CSR private key path: " + csrPrivateKeyPath);
+                                addCertificateAndKeyToStore(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+
+                                certificateOwnershipToken = response.certificateOwnershipToken;
+                        }
+
                         HashMap<String, String> parameterHashMap = new HashMap<>();
                         if (templateParameters != null) {
                                 templateParameters.forEach((k, v) -> parameterHashMap.put(k, v.toString()));
                         }
-
                         // Add uuid & signature
                         parameterHashMap.put("uuid", clientId);
                         parameterHashMap.put("signature", signature);
 
                         Future<RegisterThingResponse> registerFuture = iotIdentityHelper
-                                        .registerThing(response.certificateOwnershipToken, templateName,
+                                        .registerThing(certificateOwnershipToken, templateName,
                                                         parameterHashMap);
                         RegisterThingResponse registerThingResponse = FutureExceptionHandler
                                         .getFutureAfterCompletion(registerFuture,
@@ -280,6 +327,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         CompletableFuture<Void> disconnected = connection.disconnect();
                         FutureExceptionHandler.getFutureAfterCompletion(disconnected,
                                         "Caught exception while disconnecting");
+
+                        pkcsProviderInstance.close();
 
                         return createProvisioningConfiguration(parameterMap, provisionedIotDataEndpoint,
                                         provisionedIotCredentialsEndpoint,
@@ -340,12 +389,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 SystemConfiguration systemConfiguration = SystemConfiguration.builder()
                                 .thingName(registerThingResponse.thingName)
-                                .privateKeyPath(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString()
-                                                + PRIVATE_KEY_PATH_RELATIVE_TO_ROOT)
-                                .certificateFilePath(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString()
-                                                + DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT)
+                                .privateKeyPath("pkcs11:object=authkeylabel;type=private")
+                                .certificateFilePath("pkcs11:object=authkeylabel;type=cert")
                                 .rootCAPath(parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString())
                                 .build();
+                
 
                 return ProvisionConfiguration.builder()
                                 .systemConfiguration(systemConfiguration)
@@ -417,6 +465,137 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
+        private void writeCertificate(String certificate, String rootPath) {
+                try {
+                        Path certPath = Paths.get(rootPath, DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT);
+                        if (Files.notExists(certPath)) {
+                                Files.createDirectories(certPath.getParent());
+                                Files.createFile(certPath);
+                        }
+                        Files.write(certPath, certificate.getBytes(StandardCharsets.UTF_8));
+                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
+                                        .ownerWrite(true).build(), certPath);
+                        logger.atInfo().log("Successfully wrote certificate to file: " + certPath.toString());
+                } catch (IOException e) {
+                        logger.atError().log("Caught exception while writing certificate to file");
+                        throw new DeviceProvisioningRuntimeException("Failed to write certificate", e);
+                }
+        }
+
+        private static void copyFile(String srcPath, String dstPath) {
+                // Convert files from String to Path
+                Path src = Paths.get(srcPath);
+                Path dst = Paths.get(dstPath);
+                try {
+                        createFile(dst);
+                        Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                logger.atError().kv("src", src).kv("dst", dst)
+                        .log("Caught exception while copying file");
+                throw new DeviceProvisioningRuntimeException(
+                        String.format("Failed to copy %s to %s", src, dst), e);
+                }
+        }
+
+        private static void createFile(Path file) throws IOException {
+
+                Path parent = file.getParent();
+                if (parent != null) {
+                        Files.createDirectories(parent);
+                }
+                if (Files.notExists(file)) {
+                        Files.createFile(file);
+                }
+        }
+
+        // Methods uses syscalls to get certificate and private key into TPM
+        private void addCertificateAndKeyToStore(String rootPath) {
+                //construct the paths to the certificate and private key
+                String privateKeyPath = rootPath + PRIVATE_KEY_PATH_RELATIVE_TO_ROOT;
+                String certificatePath = rootPath + DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT;
+
+                //add the certificate and private key to the store
+                try {
+                        // Create the first tpm2_ptool command
+                        String[] commandKey = {
+                                "tpm2_ptool",
+                                "import",
+                                "--label", "claimtokenlabel",
+                                "--userpin", "myuserpin",
+                                "--privkey", privateKeyPath,
+                                "--algorithm", "rsa",
+                                "--key-label", "authkeylabel",
+                                "--path", "/data/pkcs-store/"
+                        };
+
+                        // Execute the command
+                        ProcessBuilder processBuilder = new ProcessBuilder(commandKey); 
+                        processBuilder.redirectErrorStream(true); // Combine stdout and stderr
+                        Process process = processBuilder.start();
+                        
+                        // logProcessOutput(process);  
+
+                        // Wait for the process to complete
+                        int exitCode = process.waitFor();
+                        if (exitCode != 0) {
+                                throw new RuntimeException("tpm2_ptool command failed with exit code: " + exitCode);
+                        }
+
+                       logger.atInfo().log("privatekey successfully added to TPM using tpm2_ptool.");
+                } catch (Exception e) {
+                                throw new DeviceProvisioningRuntimeException("Failed to add certificate to store", e);
+                
+                }
+                
+                try {
+                        // Build the tpm2_ptool command
+                        String[] commandCrt = {
+                                "tpm2_ptool",
+                                "addcert",
+                                "--label", "claimtokenlabel",
+                                "--key-label", "authkeylabel",
+                                "--path", "/data/pkcs-store/",
+                                certificatePath
+                                };
+
+                        // Execute the command
+                        ProcessBuilder processBuilder = new ProcessBuilder(commandCrt);
+                        processBuilder.redirectErrorStream(true); // Combine stdout and stderr
+                        Process process = processBuilder.start();
+
+                        // logProcessOutput(process);  
+
+                        // Wait for the process to complete
+                        int exitCode = process.waitFor();
+                        if (exitCode != 0) {
+                                throw new RuntimeException("tpm2_ptool command failed with exit code: " + exitCode);
+                        }
+
+                       logger.atInfo().log("Certificate successfully added to TPM using tpm2_ptool.");
+                } catch (Exception e) {
+                                throw new DeviceProvisioningRuntimeException("Failed to add private key to store", e);
+                }
+
+        }
+        
+        private void logProcessOutput(Process process) {
+                StringBuilder outputBuilder = new StringBuilder();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(process.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                        outputBuilder.append(line).append("\n");
+                        }
+                } catch (IOException e) {
+                        logger.atError().setCause(e).log("Error while reading process output");
+                }
+
+                // Log the complete output
+                if (outputBuilder.length() > 0) {
+                        logger.atInfo().log("Process output: \n" + outputBuilder.toString());
+                }
+        }
+
         private void exitprogram() throws InterruptedException {
                 // log end of execution and throw a interrupted exception to exit the program
                 boolean logendofexecution = true;
@@ -426,3 +605,59 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         }
 }
 
+
+        // Attemps at restartings the PKCS#11 provider upon successful provisioning
+
+        // // Accessing kernel attempt 
+        // private void restartPkcs11Provider() {
+        //         // 1) Get the singleton Greengrass kernel
+        //         Kernel kernel = Kernel.getInstance();
+
+        //         // 2) Obtain the ComponentManager from the Dagger context
+        //         ComponentManager compMgr = kernel.getContext().get(ComponentManager.class);
+
+        //         // 3) Request a restart of the PKCS#11 provider
+        //         compMgr.restartComponent("aws.greengrass.Pkcs11Provider")
+        //         .whenComplete((ignored, err) -> {
+        //                 if (err == null) {
+        //                         System.out.println("✅ PKCS#11 provider restart requested.");
+        //                 } else {
+        //                         err.printStackTrace();
+        //                 }
+        //         });
+        // }
+
+        // //IPC CLIENT ATTEMPT
+        // String authToken = System.getenv("SVCUID");
+        // String socketPath = "/data/greengrass/ipc.socket";
+        // if (authToken == null) {
+        //         logger.atWarn().log("Environment variable for IPC authorization token is missing!");
+        // } else {
+        //         logger.atInfo().log("Authorization token (truncated): " + authToken.substring(0, Math.min(authToken.length(), 10)) + "...");
+        // }
+
+        // // Testing the ability to restart PkcsProvider
+        // logger.atInfo().log("Restarting PKCS#11 provider");
+        // try {
+        //         // Add your code here
+        //         logger.atInfo().log("Creating IPC client");
+        //         GreengrassCoreIPCClientV2 ipcClient = GreengrassCoreIPCClientV2.builder()
+        //                 .withSocketPath(socketPath)
+        //                 .build();
+
+        //         // 1) Build the restart request targeting your PKCS#11 provider
+        //         logger.atInfo().log("Building restart request");
+        //         RestartComponentRequest request = new RestartComponentRequest()
+        //                 .withComponentName("aws.greengrass.Pkcs11Provider");
+
+        //         logger.atInfo().log("Getting response");
+        //         RestartComponentResponse resp = ipcClient.restartComponent(request);
+
+        //          if ("SUCCEEDED".equals(resp.getRestartStatusAsString())) {
+        //                 logger.atInfo().log("✅ PKCS#11 provider restarted successfully");
+        //         } else {
+        //                 logger.atInfo().log("❌ Restart failed: " + resp.getMessage());
+        //         }
+        // } catch (Exception e) {
+        //         logger.atError().setCause(e).log("An error occurred");
+        // }

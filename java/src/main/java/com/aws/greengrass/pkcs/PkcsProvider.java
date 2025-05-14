@@ -4,16 +4,22 @@ import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
 import software.amazon.awssdk.crt.io.Pkcs11Lib;
 
+
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.StringWriter;
+import java.lang.reflect.Constructor;
 import java.math.BigInteger;
 import java.security.GeneralSecurityException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.Provider;
+import java.security.SecureRandom;
 import java.security.Security;
 import java.security.Signature;
 import java.security.UnrecoverableKeyException;
@@ -21,9 +27,18 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
+import java.util.Collections;
+import javax.security.auth.x500.X500Principal;
 
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.pkcs.PKCS10CertificationRequest;
+import org.bouncycastle.pkcs.PKCS10CertificationRequestBuilder;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 
 public class PkcsProvider {
     private final Logger logger = LogManager.getLogger(PkcsProvider.class);
@@ -59,9 +74,9 @@ public class PkcsProvider {
     
     
     private void initializePKCS11() throws Exception {
-        // Create the SunPKCS11 configuration
+        // Create the SunPKCS11 configuration. NOTE: The attribute CKA_LABEL needs to be set in hex format, meaning this results in 'auth'
         String config = String.format(
-            "name=pkcs11\nlibrary=%s\nslot=%s\n",
+            "name=pkcs11\nlibrary=%s\nslot=%s\nattributes(*,*,*) = {\n    CKA_LABEL = 0h61757468\n}\n",
             libraryPath, slotIndex
         );
         
@@ -86,6 +101,7 @@ public class PkcsProvider {
         // ByteArrayInputStream configStream = new ByteArrayInputStream(config.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         // Configure the provider with our specific configuration
         Provider configuredProvider = provider.configure("/data/greengrass/config/pkcs.cfg");
+
         
         // Add the configured provider to the security providers list
         Security.addProvider(configuredProvider);
@@ -104,6 +120,43 @@ public class PkcsProvider {
             throw new RuntimeException("Failed to load keystore", e);
         }
     }
+
+    public void listKeyStoreObjects() {
+        try {
+            logger.atInfo().log("Listing all objects in the keystore:");
+            for (String alias : Collections.list(keyStore.aliases())) {
+                logger.atInfo().log("Alias: " + alias);
+
+                // Check if the alias corresponds to a private key
+                if (keyStore.isKeyEntry(alias)) {
+                    logger.atInfo().log("  Type: Private Key");
+                    PrivateKey privateKey = (PrivateKey) keyStore.getKey(alias, password.toCharArray());
+                    if (privateKey != null) {
+                        logger.atInfo().log("  Algorithm: " + privateKey.getAlgorithm());
+                    }
+                }
+
+                // Check if the alias corresponds to a certificate
+                if (keyStore.isCertificateEntry(alias)) {
+                    logger.atInfo().log("  Type: Certificate");
+                    Certificate cert = keyStore.getCertificate(alias);
+                    if (cert instanceof X509Certificate) {
+                        X509Certificate x509Cert = (X509Certificate) cert;
+                        logger.atInfo().log("  Subject: " + x509Cert.getSubjectDN());
+                        logger.atInfo().log("  Issuer: " + x509Cert.getIssuerDN());
+                    }
+                }
+
+                // Check if the alias corresponds to a certificate chain
+                Certificate[] certChain = keyStore.getCertificateChain(alias);
+                if (certChain != null) {
+                    logger.atInfo().log("  Certificate Chain Length: " + certChain.length);
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to list objects in the keystore", e);
+        }
+    }
     
     public X509Certificate getCertificate(String alias) {
         try {
@@ -117,6 +170,7 @@ public class PkcsProvider {
         }
     }
 
+    
     public String getCertificateInPEM(String label) {
         try {
             X509Certificate certificate = getCertificate(label);
@@ -228,7 +282,7 @@ public class PkcsProvider {
             throw new RuntimeException("Failed to get certificate chain", e);
         }
     }
-
+    
     // Attempt at signing data using the private key from TPM
     public String sign(String plainText, String label) throws GeneralSecurityException, IOException {
         try {
@@ -239,18 +293,18 @@ public class PkcsProvider {
             }
             logger.atInfo().log("Signing data with private key for label: " + label); 
 
-            // Get the provider from the private key
+            // Get the configured PKCS#11 provider
             Provider provider = getPkcs11Provider();    
             if (provider == null) {
                     throw new RuntimeException("Could not find SunPKCS11 provider");
             }
 
-            logger.atInfo().log("Listing supported Signature algorithms by provider: %s", provider.getName());
-            for (Provider.Service service : provider.getServices()) {
-                if ("Signature".equalsIgnoreCase(service.getType())) {
-                    logger.atInfo().log("Supported Signature:" + service.getAlgorithm());
-                }
-            }
+            // logger.atInfo().log("Listing supported Signature algorithms by provider: %s", provider.getName());
+            // for (Provider.Service service : provider.getServices()) {
+            //     if ("Signature".equalsIgnoreCase(service.getType())) {
+            //         logger.atInfo().log("Supported Signature:" + service.getAlgorithm());
+            //     }
+            // }
             
             Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", provider);
             signature.initSign(privateKey);
@@ -266,6 +320,95 @@ public class PkcsProvider {
             throw new RuntimeException("Failed to sign data using TPM: " + e.getMessage(), e);
         }
     }
+
+    public KeyPair generateKeyPair() throws RuntimeException{
+        try {
+            logger.atInfo().log("Generating key pair");
+
+            KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", pkcs11Provider);
+            keyPairGenerator.initialize(256); // Use 256-bit EC key
+            KeyPair keyPair = keyPairGenerator.generateKeyPair();
+
+            return keyPair;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate key pair", e);
+        }
+    }
+
+   public KeyPair generateKeyPairWithLabel(String label) {
+        try {
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC", pkcs11Provider);
+
+            // Reflectively load the Sun internal P11KeyGenParameterSpec
+            Class<?> specClass =
+                Class.forName("sun.security.pkcs11.P11KeyGenParameterSpec");
+            Constructor<?> ctor =
+                specClass.getConstructor(String.class, String.class);
+            AlgorithmParameterSpec spec =
+                (AlgorithmParameterSpec) ctor.newInstance(
+                        "ecc256",    // curve name (prime256v1/ secp256r1)
+                        label           // your CKA_LABEL
+                );
+
+            // Java 8 KeyPairGenerator has initialize(AlgorithmParameterSpec, SecureRandom)
+            kpg.initialize(spec, /* SecureRandom: */ null);
+            return kpg.generateKeyPair();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate labeled EC keypair", e);
+        }
+    } 
+
+    public String generateCSR(String label, KeyPair keyPair) throws RuntimeException{
+        try {
+            logger.atInfo().log("Generating CSR for label: " + label);
+
+            // Step 2: Create a CSR
+            String subjectDN = "CN=" + label; // Customize the subject DN as needed
+            PKCS10CertificationRequestBuilder csrBuilder = new JcaPKCS10CertificationRequestBuilder(new X500Principal(subjectDN), keyPair.getPublic());
+            JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withECDSA");
+            signerBuilder.setProvider(pkcs11Provider);
+            ContentSigner signer = signerBuilder.build(keyPair.getPrivate());
+            PKCS10CertificationRequest csr = csrBuilder.build(signer);
+
+            // Step 3: Convert the CSR to PEM format
+            StringWriter pemWriter = new StringWriter();
+            try (JcaPEMWriter writer = new JcaPEMWriter(pemWriter)) {
+                writer.writeObject(csr);
+            }
+
+            return pemWriter.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate CSR", e);
+        }
+    }
+
+    public boolean addCertificateToKeystore(String label, KeyPair keyPair, String certificatePem) {
+        try {
+            //parse the response.certificatePem string to the required Certificate[] chain format
+            String cleanedPem = certificatePem
+                .replace("-----BEGIN CERTIFICATE-----", "")
+                .replace("-----END CERTIFICATE-----", "")
+                .replaceAll("\\s", ""); // Remove all whitespace
+
+            // Decode the cleaned PEM string into bytes
+            byte[] decodedBytes = Base64.getDecoder().decode(cleanedPem);
+
+            // Parse the decoded bytes into an X509Certificate
+            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+            ByteArrayInputStream certInputStream = new ByteArrayInputStream(decodedBytes);
+            X509Certificate certificate = (X509Certificate) certFactory.generateCertificate(certInputStream);
+
+            // Create a certificate chain (array) with the parsed certificate
+            X509Certificate[] chain = new X509Certificate[]{certificate};
+
+            logger.atInfo().log("Adding key to keystore with label: " + label);
+            keyStore.setKeyEntry(label, keyPair.getPrivate(), password.toCharArray(), chain);
+            return true;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to add key to keystore", e);
+        }
+    }
+
 
     public void close() {
         try {

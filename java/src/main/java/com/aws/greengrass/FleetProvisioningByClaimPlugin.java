@@ -43,6 +43,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
+import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -151,18 +152,19 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String clientId = "";
 
 
-
+                // Initialize PKCS11 provider
                 PkcsProvider pkcsProviderInstance = new PkcsProvider();
 
                 try {
                         clientId = this.deviceIdentityHelper.getClientId();
-                        PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
-                        signature = this.deviceIdentityHelper.sign(clientId, privKey);
-                        logger.atInfo().log("GENERATED DEVICE SIGNATURE #1:\nclientId:" + clientId + "\nsignature:" + signature + "\n\n");
+                        // PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
+                        // signature = this.deviceIdentityHelper.sign(clientId, privKey);
+                        // logger.atInfo().log("GENERATED DEVICE SIGNATURE #1:\nclientId:" + clientId + "\nsignature:" + signature + "\n\n");
 
+                        // pkcsProviderInstance.listKeyStoreObjects();
                         // Not working, awaiting prober key placement
-                        // String signature2 = pkcsProviderInstance.sign(clientId, "claimkeylabel");
-                        // logger.atInfo().log("GENERATED DEVICE SIGNATURE #2:\nclientId:" + clientId + "\nsignature2:" + signature2 + "\n\n");
+                        signature = pkcsProviderInstance.sign(clientId, "sign");
+                        logger.atInfo().log("GENERATED DEVICE SIGNATURE #2:\nclientId:" + clientId + "\nsignature2:" + signature + "\n\n");
   
                 } catch (GeneralSecurityException | IOException ex) {
                         logger.atError().setCause(ex)
@@ -183,15 +185,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotDataEndpoint = "";
                 String provisionedIotCredentialsEndpoint = "";
 
-                // Initialize PKCS11 provider
 
                 TlsContextPkcs11Options options = null;
                 try {
-                        String certificateContent = pkcsProviderInstance.getCertificateInPEM("claimkeylabel");
+                        String certificateContent = pkcsProviderInstance.getCertificateInPEM("claim");
                         options = new TlsContextPkcs11Options(pkcsProviderInstance.getPkcs11Lib())
                         .withSlotId(1)
                         .withUserPin("myuserpin")
-                        .withPrivateKeyObjectLabel("claimkeylabel")
+                        .withPrivateKeyObjectLabel("claim")
                         .withCertificateFileContents(certificateContent); 
                 } catch (Exception e) {
                         throw new RuntimeException("Failed to initialize PKCS11 provider", e);
@@ -248,6 +249,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
 
 
+
                 // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
@@ -266,7 +268,10 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         IotIdentityHelper iotIdentityHelper = iotIdentityHelperFactory.getInstance(connection);
 
                         String certificateOwnershipToken;
-                        if (csrPath == null || Utils.isEmpty(csrPath)) {
+
+                        boolean doFileflow = false;
+                        if (doFileflow) {
+                        // if (csrPath == null || Utils.isEmpty(csrPath)) {
                                 logger.atInfo().log("Provisioning with certificates from filespaths");
                                 CreateKeysAndCertificateResponse response;
                                 response = FutureExceptionHandler.getFutureAfterCompletion(
@@ -279,33 +284,33 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 certificateOwnershipToken = response.certificateOwnershipToken;
                         } else {
                                 logger.atInfo().log("Provisioning with CSR flow");
-                                String csrFilePath = parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
-                                String csrPrivateKeyPath = parameterMap.get(CSR_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-                                
+                                // String csrFilePath = parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
+                                // String csrPrivateKeyPath = parameterMap.get(CSR_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
+                                String csrFilePath = "/data/greengrass/csr.pem";
+                                String csrPrivateKeyPath = "/data/greengrass/csr_private.pem";
+                                // try {
+                                //         Path csrFile = Paths.get(csrFilePath);
+                                //         csr = new String(Files.readAllBytes(csrFile), StandardCharsets.UTF_8);
+                                // } catch (IOException | SecurityException ex) {
+                                //         logger.atError().setCause(ex).log("Caught exception while reading the CSR file");
+                                //         throw new DeviceProvisioningRuntimeException(
+                                //         "Failed to read CSR file: " + csrFilePath, ex);
+                                // }
 
-                                String csr;
-                                try {
-                                        Path csrFile = Paths.get(csrFilePath);
-                                        csr = new String(Files.readAllBytes(csrFile), StandardCharsets.UTF_8);
-                                } catch (IOException | SecurityException ex) {
-                                        logger.atError().setCause(ex).log("Caught exception while reading the CSR file");
-                                        throw new DeviceProvisioningRuntimeException(
-                                        "Failed to read CSR file: " + csrFilePath, ex);
-                                }
+                                // Create keypair 
+                                KeyPair authKeys = pkcsProviderInstance.generateKeyPair();
+
+                                // Create CSR
+                                String csr = pkcsProviderInstance.generateCSR("auth", authKeys);
+
+
                                 CreateCertificateFromCsrResponse response;
                                 response = FutureExceptionHandler.getFutureAfterCompletion(
                                         iotIdentityHelper.createCertificateFromCsr(csr),
                                         "Caught exception during PublishCreateCertificateFromCsr");
-                                logger.atInfo().log("Successfully Executed CSR flow, got answer back from AWS:\n" + response.toString() + "\n");
 
-                                String rootPath = parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString();
-                                writeCertificate(response.certificatePem, rootPath);
-
-                                copyFile(csrPrivateKeyPath, rootPath + PRIVATE_KEY_PATH_RELATIVE_TO_ROOT);
-                                // setFilePermissions(csrPrivateKeyPath);
-                                logger.atInfo().log("Should've written to " + csrFilePath);
-                                logger.atInfo().log("CSR private key path: " + csrPrivateKeyPath);
-                                addCertificateAndKeyToStore(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+                                // write the keys and certificate to the keystore
+                                pkcsProviderInstance.addCertificateToKeystore("auth", authKeys, response.certificatePem);
 
                                 certificateOwnershipToken = response.certificateOwnershipToken;
                         }
@@ -389,8 +394,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 SystemConfiguration systemConfiguration = SystemConfiguration.builder()
                                 .thingName(registerThingResponse.thingName)
-                                .privateKeyPath("pkcs11:object=authkeylabel;type=private")
-                                .certificateFilePath("pkcs11:object=authkeylabel;type=cert")
+                                .privateKeyPath("pkcs11:object=auth;type=private")
+                                .certificateFilePath("pkcs11:object=auth;type=cert")
                                 .rootCAPath(parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString())
                                 .build();
                 

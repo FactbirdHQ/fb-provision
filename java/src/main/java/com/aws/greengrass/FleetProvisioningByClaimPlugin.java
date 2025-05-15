@@ -68,6 +68,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String ROOT_PATH_PARAMETER_NAME = "rootPath";
         static final String MQTT_PORT_PARAMETER_NAME = "mqttPort";
 
+        static final String USE_TPM_PROV_PARAMETER_NAME = "useTpmProvisioning";
+        static final String PKCS11_LIBRARY_PARAMETER_NAME = "pkcs11Library";
+        static final String PKCS11_SLOT_PARAMETER_NAME = "pkcs11Slot";
+        static final String PKCS11_USER_PIN_PARAMETER_NAME = "pkcs11UserPin";
+
         // Optional Paramters
         static final String TEMPLATE_PARAMETERS_PARAMETER_NAME = "templateParameters";
         static final String AWS_REGION_PARAMETER_NAME = "awsRegion";
@@ -76,9 +81,6 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String PROXY_USERNAME_PARAMETER_NAME = "proxyUsername";
         static final String PROXY_PASSWORD_PARAMETER_NAME = "proxyPassword";
          
-        static final String CSR_PATH_PARAMETER_NAME = "csrPath";
-        static final String CSR_PRIVATE_KEY_PATH_PARAMETER_NAME = "csrPrivateKeyPath";
-
 
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
@@ -86,6 +88,10 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT = "/config/device_config.json";
         static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/auth/prov.cert.pem";
         static final String PRIVATE_KEY_PATH_RELATIVE_TO_ROOT = "/auth/prov.pkey.pem";
+
+        static String SIGN_KEY_LABEL = null;
+        static String CLAIM_KEY_LABEL = null;
+        static final String AUTH_KEY_LABEL = "auth";
 
         private final IotIdentityHelperFactory iotIdentityHelperFactory;
         private final MgmtCloudRouterFactory mgmtCloudRouterFactory;
@@ -132,8 +138,21 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
                 }
                 String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
-                String csrPath = parameterMap.get(CSR_PATH_PARAMETER_NAME) == null ? null
-                        : parameterMap.get(CSR_PATH_PARAMETER_NAME).toString();
+                boolean useTpmProvisioning = false;
+                if (parameterMap.get(USE_TPM_PROV_PARAMETER_NAME) != null) {
+                        Object value = parameterMap.get(USE_TPM_PROV_PARAMETER_NAME);
+                        if (value instanceof Boolean) {
+                                useTpmProvisioning = (Boolean) value;
+                        } else {
+                                useTpmProvisioning = Boolean.parseBoolean(value.toString());
+                        }
+                }
+                String pkcs11Library = parameterMap.get(PKCS11_LIBRARY_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(PKCS11_LIBRARY_PARAMETER_NAME).toString();
+                String pkcs11Slot = parameterMap.get(PKCS11_SLOT_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(PKCS11_SLOT_PARAMETER_NAME).toString();
+                String pkcs11UserPin = parameterMap.get(PKCS11_USER_PIN_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(PKCS11_USER_PIN_PARAMETER_NAME).toString();
                 String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
                 String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
                 String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
@@ -150,28 +169,38 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 String signature = "";
                 String clientId = "";
+                PkcsProvider pkcsProviderInstance = null;
 
+                // Initialize PKCS11 provider and extract the key labels
+                if (useTpmProvisioning) {
+                        pkcsProviderInstance = new PkcsProvider(pkcs11Library, pkcs11UserPin, pkcs11Slot,
+                                AUTH_KEY_LABEL);       
+                        SIGN_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(signKeyPath);
+                        CLAIM_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(certPath);
 
-                // Initialize PKCS11 provider
-                PkcsProvider pkcsProviderInstance = new PkcsProvider();
+                        // if either of the labels are not found, throw an exception
+                        if (SIGN_KEY_LABEL == null || CLAIM_KEY_LABEL == null) {
+                                throw new DeviceProvisioningRuntimeException("Failed to extract key labels from URI's");
+                        }
+                } 
 
+                // Sign the clientId with the private key
                 try {
                         clientId = this.deviceIdentityHelper.getClientId();
-                        // PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
-                        // signature = this.deviceIdentityHelper.sign(clientId, privKey);
-                        // logger.atInfo().log("GENERATED DEVICE SIGNATURE #1:\nclientId:" + clientId + "\nsignature:" + signature + "\n\n");
 
-                        // pkcsProviderInstance.listKeyStoreObjects();
-                        // Not working, awaiting prober key placement
-                        signature = pkcsProviderInstance.sign(clientId, "sign");
-                        logger.atInfo().log("GENERATED DEVICE SIGNATURE #2:\nclientId:" + clientId + "\nsignature2:" + signature + "\n\n");
-  
+                        if (!useTpmProvisioning) {
+                                PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
+                                signature = this.deviceIdentityHelper.sign(clientId, privKey);
+                        } else {
+                                signature = pkcsProviderInstance.sign(clientId, SIGN_KEY_LABEL);
+                        }
                 } catch (GeneralSecurityException | IOException ex) {
                         logger.atError().setCause(ex)
-                                        .log("Exception encountered while getting claimed cloud endpoint information");
+                                        .log("Exception encountered while signing the clientId");
                         throw new InterruptedException();
                 }
 
+                exitprogram();
 
                 MqttConnectionParametersBuilder mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
                                 .builder()
@@ -211,7 +240,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                                         CompletableFuture<Boolean> connected = mgmtConnection.connect();
                                         FutureExceptionHandler.getFutureAfterCompletion(connected,
-                                                        "Caught exception while establishing connection to AWS Iot");
+                                            "Caught exception while establishing connection to AWS Iot");
 
                                         boolean success = false;
                                         while (!success) {
@@ -219,19 +248,23 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                                         MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
 
                                                         GetEndpointResponse getEndpointResponse = FutureExceptionHandler
-                                                                        .getFutureAfterCompletion(mgmtCloudRouter.getEndpoint(clientId, signature),
-                                                                                        "Caught exception during getting endpoint from mgmt");
+                                                            .getFutureAfterCompletion(
+                                                                mgmtCloudRouter.getEndpoint(clientId, signature),
+                                                                "Caught exception during getting endpoint from mgmt"
+                                                            );
 
                                                         provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
                                                         provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
-                                                        logger.atInfo().kv("provisionedIotDataEndpoint", provisionedIotDataEndpoint)
-                                                                                .kv("provisionedIotCredentialsEndpoint", provisionedIotCredentialsEndpoint)
-                                                                                .log("Successfully obtained cloud endpoints");
+                                                        logger.atInfo()
+                                                            .kv("provisionedIotDataEndpoint", provisionedIotDataEndpoint)
+                                                            .kv("provisionedIotCredentialsEndpoint", provisionedIotCredentialsEndpoint)
+                                                            .log("Successfully obtained cloud endpoints");
 
                                                         // If we get this far, we've successfully gotten claimed.
                                                         success = true;
                                                 } catch (Exception e) {
-                                                        logger.atError().log("Didn't receive endpoint. Is the device claimed? Retrying in 15 minuttes.");
+                                                        logger.atError()
+                                                            .log("Didn't receive endpoint. Is the device claimed? Retrying in 15 minuttes.");
                                                         TimeUnit.MINUTES.sleep(15);
                                                 }
                                                 
@@ -240,7 +273,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                         // disconnect
                                         CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
                                         FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                                                        "Caught exception while disconnecting");
+                                            "Caught exception while disconnecting");
 
                 } catch (CrtRuntimeException | InterruptedException ex) {
                         logger.atError().setCause(ex)
@@ -263,7 +296,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         // Setup new connection to `provisionedIotDataEndpoint`
                         CompletableFuture<Boolean> connected = connection.connect();
                         FutureExceptionHandler.getFutureAfterCompletion(connected,
-                                        "Caught exception while establishing connection to AWS Iot");
+                            "Caught exception while establishing connection to AWS Iot");
 
                         IotIdentityHelper iotIdentityHelper = iotIdentityHelperFactory.getInstance(connection);
 
@@ -271,15 +304,17 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                         boolean doFileflow = false;
                         if (doFileflow) {
-                        // if (csrPath == null || Utils.isEmpty(csrPath)) {
+                                // if (csrPath == null || Utils.isEmpty(csrPath)) {
                                 logger.atInfo().log("Provisioning with certificates from filespaths");
                                 CreateKeysAndCertificateResponse response;
                                 response = FutureExceptionHandler.getFutureAfterCompletion(
-                                                iotIdentityHelper.createKeysAndCertificate(),
-                                                "Caught exception during PublishCreateKeysAndCertificate");
+                                    iotIdentityHelper.createKeysAndCertificate(),
+                                    "Caught exception during PublishCreateKeysAndCertificate");
 
-                                writeCertificateAndKeyToPath(response, parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
-                                addCertificateAndKeyToStore(parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+                                writeCertificateAndKeyToPath(response,
+                                    parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
+                                addCertificateAndKeyToStore(
+                                    parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
                                                                                 
                                 certificateOwnershipToken = response.certificateOwnershipToken;
                         } else {
@@ -306,11 +341,12 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                                 CreateCertificateFromCsrResponse response;
                                 response = FutureExceptionHandler.getFutureAfterCompletion(
-                                        iotIdentityHelper.createCertificateFromCsr(csr),
-                                        "Caught exception during PublishCreateCertificateFromCsr");
+                                    iotIdentityHelper.createCertificateFromCsr(csr),
+                                    "Caught exception during PublishCreateCertificateFromCsr");
 
                                 // write the keys and certificate to the keystore
-                                pkcsProviderInstance.addCertificateToKeystore("auth", authKeys, response.certificatePem);
+                                pkcsProviderInstance.addCertificateToKeystore(
+                                    "auth", authKeys, response.certificatePem);
 
                                 certificateOwnershipToken = response.certificateOwnershipToken;
                         }
@@ -324,20 +360,18 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         parameterHashMap.put("signature", signature);
 
                         Future<RegisterThingResponse> registerFuture = iotIdentityHelper
-                                        .registerThing(certificateOwnershipToken, templateName,
-                                                        parameterHashMap);
+                            .registerThing(certificateOwnershipToken, templateName, parameterHashMap);
                         RegisterThingResponse registerThingResponse = FutureExceptionHandler
-                                        .getFutureAfterCompletion(registerFuture,
-                                                        "Caught exception during registering Iot Thing");
+                            .getFutureAfterCompletion(registerFuture,
+                                "Caught exception during registering Iot Thing");
                         CompletableFuture<Void> disconnected = connection.disconnect();
                         FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                                        "Caught exception while disconnecting");
+                            "Caught exception while disconnecting");
 
                         pkcsProviderInstance.close();
 
                         return createProvisioningConfiguration(parameterMap, provisionedIotDataEndpoint,
-                                        provisionedIotCredentialsEndpoint,
-                                        registerThingResponse);
+                            provisionedIotCredentialsEndpoint, registerThingResponse);
                 } catch (CrtRuntimeException | InterruptedException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting device identity information");
@@ -416,7 +450,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
-        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint, String iotCredEndpoint, String rootPath) {
+        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint, 
+                        String iotCredEndpoint, String rootPath) {
                 try {
                         // Store registerThingResponse.deviceConfiguration to some file in JSON format.
 
@@ -436,8 +471,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 Files.createFile(confPath);
                         }
                         Files.write(confPath, jsonData.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
-                                        .ownerWrite(true).build(), confPath);
+                        Platform.getInstance().setPermissions(
+                            FileSystemPermission.builder().ownerRead(true).ownerWrite(true).build(), confPath);
                 } catch (IOException e) {
                         logger.atError().log("Caught exception while writing device configuration to file");
                         throw new DeviceProvisioningRuntimeException("Failed to write device configuration", e);
@@ -453,8 +488,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 Files.createFile(certPath);
                         }
                         Files.write(certPath, response.certificatePem.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
-                                        .ownerWrite(true).build(), certPath);
+                        Platform.getInstance().setPermissions(
+                            FileSystemPermission.builder().ownerRead(true).ownerWrite(true).build(), certPath);
 
                         Path keyPath = Paths.get(rootPath, PRIVATE_KEY_PATH_RELATIVE_TO_ROOT);
                         if (Files.notExists(keyPath)) {
@@ -462,8 +497,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 Files.createFile(keyPath);
                         }
                         Files.write(keyPath, response.privateKey.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
-                                        .ownerWrite(true).build(), keyPath);
+                        Platform.getInstance().setPermissions(
+                            FileSystemPermission.builder().ownerRead(true).ownerWrite(true).build(), keyPath);
                 } catch (IOException e) {
                         logger.atError().log("Caught exception while writing certificate and private key to file");
                         throw new DeviceProvisioningRuntimeException("Failed to write certificate and private key", e);
@@ -478,8 +513,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 Files.createFile(certPath);
                         }
                         Files.write(certPath, certificate.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(FileSystemPermission.builder().ownerRead(true)
-                                        .ownerWrite(true).build(), certPath);
+                        Platform.getInstance().setPermissions(
+                            FileSystemPermission.builder().ownerRead(true).ownerWrite(true).build(), certPath);
                         logger.atInfo().log("Successfully wrote certificate to file: " + certPath.toString());
                 } catch (IOException e) {
                         logger.atError().log("Caught exception while writing certificate to file");
@@ -496,7 +531,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
                 } catch (IOException e) {
                 logger.atError().kv("src", src).kv("dst", dst)
-                        .log("Caught exception while copying file");
+                    .log("Caught exception while copying file");
                 throw new DeviceProvisioningRuntimeException(
                         String.format("Failed to copy %s to %s", src, dst), e);
                 }

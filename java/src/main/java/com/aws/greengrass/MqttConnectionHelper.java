@@ -90,7 +90,8 @@ public class MqttConnectionHelper {
      * @param mqttConnectionParameters {@link MqttConnectionParameters}
      * @return {@link MqttClientConnection}
      */
-    public MqttClientConnection getMqttConnectionPkcs(MqttConnectionParameters mqttConnectionParameters, TlsContextPkcs11Options tlsOptions) {
+    public MqttClientConnection getMqttConnectionPkcs(
+        MqttConnectionParameters mqttConnectionParameters, TlsContextPkcs11Options tlsOptions) {
         try (AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(tlsOptions)
                 .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
                 .withEndpoint(mqttConnectionParameters.getEndpoint())

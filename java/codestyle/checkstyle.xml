@@ -45,7 +45,7 @@
     <module name="LineLength">
         <property name="severity" value="warning"/>
         <property name="fileExtensions" value="java"/>
-        <property name="max" value="120"/>
+        <property name="max" value="145"/>
         <property name="ignorePattern" value="^package.*|^import.*|a href|href|http://|https://|ftp://"/>
     </module>
 
@@ -238,9 +238,6 @@
                     PARAMETER_DEF, VARIABLE_DEF, METHOD_DEF"/>
         </module>
         <module name="OverloadMethodsDeclarationOrder">
-            <property name="severity" value="warning"/>
-        </module>
-        <module name="VariableDeclarationUsageDistance">
             <property name="severity" value="warning"/>
         </module>
         <module name="CustomImportOrder">

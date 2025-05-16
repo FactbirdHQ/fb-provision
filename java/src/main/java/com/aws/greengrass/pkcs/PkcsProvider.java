@@ -63,10 +63,10 @@ import javax.security.auth.x500.X500Principal;
 public class PkcsProvider {
     private final Logger logger = LogManager.getLogger(PkcsProvider.class);
     private KeyStore keyStore;
-    private String libraryPath = "/usr/lib/pkcs11/libtpm2_pkcs11.so"; // Default PKCS#11 library path
-    private String password = "password"; // Default pin/password
-    private String slotIndex = "1"; // Default slot index
-    private String createKeysLabel = "auth"; // Default label for new keys
+    private String libraryPath;
+    private String password;
+    private String slotIndex;
+    private String createKeysLabel;
     private Pkcs11Lib pkcs11Lib;
     private Provider pkcs11Provider;
 
@@ -84,7 +84,7 @@ public class PkcsProvider {
             this.password = password;
             this.slotIndex = slotIndex;
             this.createKeysLabel = newKeysLabel;
-            initializePKCS11(createKeysLabel);
+            initializePKCS11();
             initializePkcs11Lib();
             loadKeyStore();
         } catch (Exception e) {
@@ -92,10 +92,10 @@ public class PkcsProvider {
         }
     }
     
-    private void initializePKCS11(String label) throws Exception {
+    private void initializePKCS11() throws Exception {
         // Convert the label to hex for CKA_LABEL
         StringBuilder hexLabel = new StringBuilder();
-        for (char c : label.toCharArray()) {
+        for (char c : createKeysLabel.toCharArray()) {
             hexLabel.append(String.format("%02x", (int) c));
         }
         String hexLabelStr = hexLabel.toString();
@@ -269,7 +269,6 @@ public class PkcsProvider {
         }
     }
 
-    // The issue with this function can be found in ./errormessage.log
     /**
      * Writes a PEM-encoded certificate to the keystore under the specified label.
      *
@@ -558,12 +557,11 @@ public class PkcsProvider {
     }
 
     /**
-     * Creates and returns a TlsContextPkcs11Options object for the given key label.
+     * Creates and returns a TlsContextPkcs11Options object for the given key label,
+     * using the configured PKCS#11 library, slot index, and user PIN.
      *
-     * @param keyLabel the label of the private key and certificate
-     * @param userPin the user PIN for the PKCS#11 token
-     * @param slotId the slot ID for the PKCS#11 token
-     * @return a configured TlsContextPkcs11Options object
+     * @param keyLabel the label of the private key and certificate to use
+     * @return a configured TlsContextPkcs11Options object for TLS operations
      */
     public TlsContextPkcs11Options createTlsContextPkcs11Options(String keyLabel) {
         try {

@@ -8,6 +8,7 @@ package com.aws.greengrass;
 
 import com.aws.greengrass.model.GetEndpointRequest;
 import com.aws.greengrass.model.GetEndpointResponse;
+import com.aws.greengrass.model.GetEndpointResponseRejected;
 import com.aws.greengrass.model.GetEndpointSubscriptionRequest;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -160,13 +161,13 @@ public class GetEndpointClient {
         String clientId,
         GetEndpointSubscriptionRequest request,
         QualityOfService qos,
-        Consumer<ErrorResponse> handler,
+        Consumer<GetEndpointResponseRejected> handler,
         Consumer<Exception> exceptionHandler) {
         String topic = String.format("endpoint/v1/%s/rejected", clientId);
         Consumer<MqttMessage> messageHandler = (message) -> {
             try {
                 String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
-                ErrorResponse response = gson.fromJson(payload, ErrorResponse.class);
+                GetEndpointResponseRejected response = gson.fromJson(payload, GetEndpointResponseRejected.class);
                 handler.accept(response);
             } catch (Exception e) {
                 if (exceptionHandler != null) {
@@ -198,7 +199,7 @@ public class GetEndpointClient {
         String clientId,
         GetEndpointSubscriptionRequest request,
         QualityOfService qos,
-        Consumer<ErrorResponse> handler) {
+        Consumer<GetEndpointResponseRejected> handler) {
         return subscribeToGetEndpointRejected(clientId, request, qos, handler, null);
     }
 }

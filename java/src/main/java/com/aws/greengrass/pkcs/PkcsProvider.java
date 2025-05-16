@@ -9,6 +9,7 @@ import org.bouncycastle.pkcs.PKCS10CertificationRequest;
 import org.bouncycastle.pkcs.PKCS10CertificationRequestBuilder;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import software.amazon.awssdk.crt.io.Pkcs11Lib;
+import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -99,6 +100,7 @@ public class PkcsProvider {
         }
         String hexLabelStr = hexLabel.toString();
 
+        // The result of this means that ANY key / cert will be created by this provider will have the auth label
         String config = String.format(
             "name=pkcs11\nlibrary=%s\nslot=%s\nattributes(*,*,*) = {\n    CKA_LABEL = 0h%s\n}\n",
             libraryPath, slotIndex, hexLabelStr
@@ -379,20 +381,7 @@ public class PkcsProvider {
             }
             logger.atInfo().log("Signing data with private key for label: " + label); 
 
-            // Get the configured PKCS#11 provider
-            Provider provider = getPkcs11Provider();    
-            if (provider == null) {
-                    throw new RuntimeException("Could not find SunPKCS11 provider");
-            }
-
-            // logger.atInfo().log("Listing supported Signature algorithms by provider: %s", provider.getName());
-            // for (Provider.Service service : provider.getServices()) {
-            //     if ("Signature".equalsIgnoreCase(service.getType())) {
-            //         logger.atInfo().log("Supported Signature:" + service.getAlgorithm());
-            //     }
-            // }
-            
-            Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", provider);
+            Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", pkcs11Provider);
             signature.initSign(privateKey);
 
             signature.update(plainText.getBytes("UTF-8"));
@@ -415,8 +404,8 @@ public class PkcsProvider {
      */
     public KeyPair generateKeyPair() throws RuntimeException {
         try {
+            // The auth label comes from the configuration in initializePKCS11()
             logger.atInfo().log("Generating key pair");
-
             KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", pkcs11Provider);
             keyPairGenerator.initialize(256); // Use 256-bit EC key
             KeyPair keyPair = keyPairGenerator.generateKeyPair();
@@ -457,19 +446,19 @@ public class PkcsProvider {
     } 
 
     /**
-     * Generates a Certificate Signing Request (CSR) for the given label and key pair.
+     * Generates a Certificate Signing Request (CSR) using the given UUID and key pair.
      *
-     * @param label the label for the CSR subject
+     * @param uuid the UUID to use as the subject in the CSR
      * @param keyPair the key pair to use for the CSR
      * @return the PEM-encoded CSR string
      * @throws RuntimeException if CSR generation fails
      */
-    public String generateCSR(String label, KeyPair keyPair) throws RuntimeException {
+    public String generateCSR(String uuid, KeyPair keyPair) throws RuntimeException {
         try {
-            logger.atInfo().log("Generating CSR for label: " + label);
+            logger.atInfo().log("Generating UUID for label: " + uuid);
 
             // Step 2: Create a CSR
-            String subjectDN = "CN=" + label; // Customize the subject DN as needed
+            String subjectDN = "CN=" + uuid; // Customize the subject DN as needed
             PKCS10CertificationRequestBuilder csrBuilder = new JcaPKCS10CertificationRequestBuilder(
                     new X500Principal(subjectDN), keyPair.getPublic());
             JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withECDSA");
@@ -566,6 +555,27 @@ public class PkcsProvider {
             }
         }
         return null;
+    }
+
+    /**
+     * Creates and returns a TlsContextPkcs11Options object for the given key label.
+     *
+     * @param keyLabel the label of the private key and certificate
+     * @param userPin the user PIN for the PKCS#11 token
+     * @param slotId the slot ID for the PKCS#11 token
+     * @return a configured TlsContextPkcs11Options object
+     */
+    public TlsContextPkcs11Options createTlsContextPkcs11Options(String keyLabel) {
+        try {
+            String certificateContent = getCertificateInPEM(keyLabel);
+            return new TlsContextPkcs11Options(pkcs11Lib)
+                    .withSlotId(Integer.parseInt(slotIndex))
+                    .withUserPin(password)
+                    .withPrivateKeyObjectLabel(keyLabel)
+                    .withCertificateFileContents(certificateContent);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create TlsContextPkcs11Options", e);
+        }
     }
 
 }

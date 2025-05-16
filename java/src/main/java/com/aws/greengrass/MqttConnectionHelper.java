@@ -51,14 +51,21 @@ public class MqttConnectionHelper {
      * @return {@link MqttClientConnection}
      */
     public MqttClientConnection getMqttConnection(MqttConnectionParameters mqttConnectionParameters) {
-        try (AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder.newMtlsBuilderFromPath(
-                        mqttConnectionParameters.getCertPath(), mqttConnectionParameters.getKeyPath())
-                .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
-                .withEndpoint(mqttConnectionParameters.getEndpoint())
-                .withClientId(mqttConnectionParameters.getClientId())
-                .withCleanSession(true)
-                .withBootstrap(mqttConnectionParameters.getClientBootstrap())
-                .withConnectionEventCallbacks(callbacks)) {
+        AwsIotMqttConnectionBuilder builder;
+        if (mqttConnectionParameters.getTlsPkcsOptions() != null) {
+            builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(mqttConnectionParameters.getTlsPkcsOptions());
+        } else {
+            builder = AwsIotMqttConnectionBuilder.newMtlsBuilderFromPath(
+                mqttConnectionParameters.getCertPath(), mqttConnectionParameters.getKeyPath());
+        } 
+
+        try (AwsIotMqttConnectionBuilder ignored = builder
+            .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
+            .withEndpoint(mqttConnectionParameters.getEndpoint())
+            .withClientId(mqttConnectionParameters.getClientId())
+            .withCleanSession(true)
+            .withBootstrap(mqttConnectionParameters.getClientBootstrap())
+            .withConnectionEventCallbacks(callbacks)) {
 
             if (mqttConnectionParameters.getMqttPort() != null) {
                 Class<?> classObj = builder.getClass();
@@ -163,6 +170,7 @@ public class MqttConnectionHelper {
         return URI.create(url).getScheme();
     }
 
+
     @Builder
     @Getter
     public static class MqttConnectionParameters {
@@ -173,6 +181,7 @@ public class MqttConnectionHelper {
         private String rootCaPath;
         private String endpoint;
         private String clientId;
+        private TlsContextPkcs11Options tlsPkcsOptions;
         private Integer mqttPort;
         private ClientBootstrap clientBootstrap;
         private HttpProxyOptions httpProxyOptions;

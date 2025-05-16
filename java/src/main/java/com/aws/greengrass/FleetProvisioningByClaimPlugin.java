@@ -254,6 +254,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                                         GetEndpointResponse getEndpointResponse = FutureExceptionHandler
                                                             .getFutureAfterCompletion(
                                                                 mgmtCloudRouter.getEndpoint(clientId, signature),
+                                                                900,
                                                                 "Caught exception during getting endpoint from mgmt"
                                                             );
 
@@ -264,8 +265,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                                         success = true;
                                                 } catch (Exception e) {
                                                         logger.atError()
-                                                            .log("Didn't receive endpoint. Is the device claimed? Retrying in 15 minuttes.");
-                                                        TimeUnit.MINUTES.sleep(15);
+                                                            .log("Didn't receive endpoint. Is the device claimed? Retrying in 20 seconds.");
+                                                        TimeUnit.SECONDS.sleep(20);
                                                 }
                                                 
                                         }
@@ -417,8 +418,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 // If the claim certificate was a pkcs11 URI, then the we assume we've been running the pkcs11 flow
                 if (parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString().contains("pkcs11")) {
-                        confPrivateKeyPath = "pkcs11:object="+AUTH_KEY_LABEL+";type=private";
-                        confCertPath = "pkcs11:object="+AUTH_KEY_LABEL+";type=cert";
+                        confPrivateKeyPath = "pkcs11:object=" + AUTH_KEY_LABEL + ";type=private";
+                        confCertPath = "pkcs11:object=" + AUTH_KEY_LABEL + ";type=cert";
                 } else {
                         confPrivateKeyPath = parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString()
                                                 + PRIVATE_KEY_PATH_RELATIVE_TO_ROOT;

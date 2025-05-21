@@ -44,16 +44,19 @@ public class MqttConnectionHelper {
                     .log("Connection resumed: ");
         }
     };
-
+         
     /**
      * Create mqtt connection using the given certificates, and endpoint.
      * @param mqttConnectionParameters {@link MqttConnectionParameters}
      * @return {@link MqttClientConnection}
      */
     public MqttClientConnection getMqttConnection(MqttConnectionParameters mqttConnectionParameters) {
+        
+        // We create the builder with either PKCS11 or cert/key path, based on existance of TlsPkcsOptions
         AwsIotMqttConnectionBuilder builder;
         if (mqttConnectionParameters.getTlsPkcsOptions() != null) {
-            builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(mqttConnectionParameters.getTlsPkcsOptions());
+            builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(
+                mqttConnectionParameters.getTlsPkcsOptions());
         } else {
             builder = AwsIotMqttConnectionBuilder.newMtlsBuilderFromPath(
                 mqttConnectionParameters.getCertPath(), mqttConnectionParameters.getKeyPath());
@@ -91,47 +94,6 @@ public class MqttConnectionHelper {
             return builder.build();
         }
     }
-
-    /**
-     * Create mqtt connection using the given TlsContextPkcs11Option's, and endpoint.
-     * @param mqttConnectionParameters {@link MqttConnectionParameters}
-     * @return {@link MqttClientConnection}
-     */
-    public MqttClientConnection getMqttConnectionPkcs(
-        MqttConnectionParameters mqttConnectionParameters, TlsContextPkcs11Options tlsOptions) {
-        try (AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(tlsOptions)
-                .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
-                .withEndpoint(mqttConnectionParameters.getEndpoint())
-                .withClientId(mqttConnectionParameters.getClientId())
-                .withCleanSession(true)
-                .withBootstrap(mqttConnectionParameters.getClientBootstrap())
-                .withConnectionEventCallbacks(callbacks)) {
-
-            if (mqttConnectionParameters.getMqttPort() != null) {
-                Class<?> classObj = builder.getClass();
-                try {
-                    Method method = classObj.getDeclaredMethod("withPort", int.class);
-                    method.invoke(builder, mqttConnectionParameters.getMqttPort());
-                } catch (NoSuchMethodException e) {
-                    try {
-                        Method method = classObj.getDeclaredMethod("withPort", short.class);
-                        method.invoke(builder, mqttConnectionParameters.getMqttPort().shortValue());
-                    } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ex) {
-                        logger.atWarn().log("Can not successfully use port: "
-                                + mqttConnectionParameters.getMqttPort().shortValue(), ex);
-                    }
-                } catch (IllegalAccessException | InvocationTargetException e) {
-                    logger.atWarn().log("Can not successfully use port: "
-                            + mqttConnectionParameters.getMqttPort().intValue(), e);
-                }
-            }
-            if (mqttConnectionParameters.getHttpProxyOptions() != null) {
-                builder.withHttpProxyOptions(mqttConnectionParameters.getHttpProxyOptions());
-            }
-            return builder.build();
-        }
-    }
-
 
     /**
      * Creates {@link HttpProxyOptions} from given proxy url, username and password.

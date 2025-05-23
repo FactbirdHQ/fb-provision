@@ -14,10 +14,15 @@ import lombok.Getter;
 import software.amazon.awssdk.crt.CRT;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
+import software.amazon.awssdk.crt.io.TlsContext;
+import software.amazon.awssdk.crt.io.TlsContextPkcs11Options;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnectionEvents;
 import software.amazon.awssdk.iot.AwsIotMqttConnectionBuilder;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.URI;
 import javax.annotation.Nullable;
 
 public class MqttConnectionHelper {
@@ -39,45 +44,68 @@ public class MqttConnectionHelper {
                     .log("Connection resumed: ");
         }
     };
-
+         
     /**
      * Create mqtt connection using the given certificates, and endpoint.
-     * 
      * @param mqttConnectionParameters {@link MqttConnectionParameters}
      * @return {@link MqttClientConnection}
      */
     public MqttClientConnection getMqttConnection(MqttConnectionParameters mqttConnectionParameters) {
-        AwsIotMqttConnectionBuilder builder = AwsIotMqttConnectionBuilder
-                .newMtlsBuilderFromPath(mqttConnectionParameters.getCertPath(),
-                        mqttConnectionParameters.getKeyPath())
-                .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
-                .withEndpoint(mqttConnectionParameters.getEndpoint())
-                .withClientId(mqttConnectionParameters.getClientId())
-                .withCleanSession(true)
-                .withBootstrap(mqttConnectionParameters.getClientBootstrap())
-                .withConnectionEventCallbacks(callbacks);
+        
+        // We create the builder with either PKCS11 or cert/key path, based on existance of TlsPkcsOptions
+        AwsIotMqttConnectionBuilder builder;
+        if (mqttConnectionParameters.getTlsPkcsOptions() != null) {
+            builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(
+                mqttConnectionParameters.getTlsPkcsOptions());
+        } else {
+            builder = AwsIotMqttConnectionBuilder.newMtlsBuilderFromPath(
+                mqttConnectionParameters.getCertPath(), mqttConnectionParameters.getKeyPath());
+        } 
 
-        if (mqttConnectionParameters.getMqttPort() != null) {
-            builder.withPort(mqttConnectionParameters.getMqttPort().shortValue());
+        try (AwsIotMqttConnectionBuilder ignored = builder
+            .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
+            .withEndpoint(mqttConnectionParameters.getEndpoint())
+            .withClientId(mqttConnectionParameters.getClientId())
+            .withCleanSession(true)
+            .withBootstrap(mqttConnectionParameters.getClientBootstrap())
+            .withConnectionEventCallbacks(callbacks)) {
+
+            if (mqttConnectionParameters.getMqttPort() != null) {
+                Class<?> classObj = builder.getClass();
+                try {
+                    Method method = classObj.getDeclaredMethod("withPort", int.class);
+                    method.invoke(builder, mqttConnectionParameters.getMqttPort());
+                } catch (NoSuchMethodException e) {
+                    try {
+                        Method method = classObj.getDeclaredMethod("withPort", short.class);
+                        method.invoke(builder, mqttConnectionParameters.getMqttPort().shortValue());
+                    } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ex) {
+                        logger.atWarn().log("Can not successfully use port: "
+                                + mqttConnectionParameters.getMqttPort().shortValue(), ex);
+                    }
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    logger.atWarn().log("Can not successfully use port: "
+                            + mqttConnectionParameters.getMqttPort().intValue(), e);
+                }
+            }
+            if (mqttConnectionParameters.getHttpProxyOptions() != null) {
+                builder.withHttpProxyOptions(mqttConnectionParameters.getHttpProxyOptions());
+            }
+            return builder.build();
         }
-        if (mqttConnectionParameters.getHttpProxyOptions() != null) {
-            builder.withHttpProxyOptions(mqttConnectionParameters.getHttpProxyOptions());
-        }
-        return builder.build();
     }
 
     /**
      * Creates {@link HttpProxyOptions} from given proxy url, username and password.
-     * 
-     * @param proxyUrl      The proxyUrl of the format scheme://userinfo@host:port.
-     * @param proxyUserName username for proxy. It will be ignored if proxyUrl has
-     *                      username info
-     * @param proxyPassword password for proxy. It will be ignored if the proxyUrl
-     *                      has password info
+     * @param proxyUrl The proxyUrl of the format scheme://userinfo@host:port.
+     * @param proxyUserName username for proxy. It will be ignored if proxyUrl has username info
+     * @param proxyPassword password for proxy. It will be ignored if the proxyUrl has password info
+     * @param tlsContext optional tls context for HTTPS proxy.
      * @return {@link HttpProxyOptions}
      */
     @Nullable
-    public static HttpProxyOptions getHttpProxyOptions(String proxyUrl, String proxyUserName, String proxyPassword) {
+    public static HttpProxyOptions getHttpProxyOptions(String proxyUrl, String proxyUserName, String proxyPassword,
+                                                       @Nullable TlsContext tlsContext) {
         if (Utils.isEmpty(proxyUrl)) {
             return null;
         }
@@ -85,6 +113,10 @@ public class MqttConnectionHelper {
         HttpProxyOptions httpProxyOptions = new HttpProxyOptions();
         httpProxyOptions.setHost(ProxyUtils.getHostFromProxyUrl(proxyUrl));
         httpProxyOptions.setPort(ProxyUtils.getPortFromProxyUrl(proxyUrl));
+
+        if ("https".equalsIgnoreCase(getSchemeFromProxyUrl(proxyUrl))) {
+            httpProxyOptions.setTlsContext(tlsContext);
+        }
 
         String proxyUsername = ProxyUtils.getProxyUsername(proxyUrl, proxyUserName);
         if (Utils.isNotEmpty(proxyUsername)) {
@@ -96,14 +128,22 @@ public class MqttConnectionHelper {
         return httpProxyOptions;
     }
 
+    private static String getSchemeFromProxyUrl(String url) {
+        return URI.create(url).getScheme();
+    }
+
+
     @Builder
     @Getter
     public static class MqttConnectionParameters {
         private String certPath;
         private String keyPath;
+        private String privKeyUri;
+        private String certificateUri;
         private String rootCaPath;
         private String endpoint;
         private String clientId;
+        private TlsContextPkcs11Options tlsPkcsOptions;
         private Integer mqttPort;
         private ClientBootstrap clientBootstrap;
         private HttpProxyOptions httpProxyOptions;

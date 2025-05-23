@@ -75,8 +75,9 @@ public class MgmtCloudRouter {
                 getEndpointSubscriptionRequest,
                 QualityOfService.AT_LEAST_ONCE,
                 (errorResponse) -> {
-                    RuntimeException e = new RuntimeException(errorResponse.errorMessage);
-                    getEndpointFuture.completeExceptionally(e);
+                    logger.atInfo()
+                            .log("Message on getEndpointRejected. Code: {}, Message: {}", errorResponse.code, errorResponse.message 
+                            + ". Keeping connection open while awaiting claim.");
                 });
         FutureExceptionHandler.getFutureAfterCompletion(getEndpointSubscribedRejected, timeout);
 

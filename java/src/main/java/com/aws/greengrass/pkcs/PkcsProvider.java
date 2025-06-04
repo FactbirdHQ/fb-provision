@@ -138,7 +138,7 @@ public class PkcsProvider {
      */
     private void loadKeyStore() {
         try {
-            keyStore = KeyStore.getInstance("PKCS11");
+            keyStore = KeyStore.getInstance("PKCS11", getPkcs11Provider());
             keyStore.load(null, password.toCharArray());
         } catch (KeyStoreException | IOException | NoSuchAlgorithmException | CertificateException e) {
             throw new RuntimeException("Failed to load keystore", e);
@@ -380,7 +380,7 @@ public class PkcsProvider {
             }
             logger.atInfo().log("Signing data with private key for label: " + label); 
 
-            Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", pkcs11Provider);
+            Signature signature = Signature.getInstance("SHA256withECDSAinP1363format", getPkcs11Provider());
             signature.initSign(privateKey);
 
             signature.update(plainText.getBytes("UTF-8"));
@@ -405,7 +405,7 @@ public class PkcsProvider {
         try {
             // The auth label comes from the configuration in initializePKCS11()
             logger.atInfo().log("Generating key pair");
-            KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", pkcs11Provider);
+            KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", getPkcs11Provider());
             keyPairGenerator.initialize(256); // Use 256-bit EC key
             KeyPair keyPair = keyPairGenerator.generateKeyPair();
 
@@ -423,7 +423,7 @@ public class PkcsProvider {
      */
     public KeyPair generateKeyPairWithLabel(String label) {
         try {
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC", pkcs11Provider);
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC", getPkcs11Provider());
 
             // Reflectively load the Sun internal P11KeyGenParameterSpec
             Class<?> specClass =
@@ -461,7 +461,7 @@ public class PkcsProvider {
             PKCS10CertificationRequestBuilder csrBuilder = new JcaPKCS10CertificationRequestBuilder(
                     new X500Principal(subjectDN), keyPair.getPublic());
             JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withECDSA");
-            signerBuilder.setProvider(pkcs11Provider);
+            signerBuilder.setProvider(getPkcs11Provider());
             ContentSigner signer = signerBuilder.build(keyPair.getPrivate());
             PKCS10CertificationRequest csr = csrBuilder.build(signer);
 

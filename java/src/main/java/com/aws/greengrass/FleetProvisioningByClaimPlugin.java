@@ -128,6 +128,8 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         public ProvisionConfiguration updateIdentityConfiguration(ProvisionContext provisionContext)
                         throws RetryableProvisioningException, InterruptedException {
 
+                logger.atInfo().log("Running updated FleetProvisioningByClaimPlugin with DNS retry logic");
+
                 Map<String, Object> parameterMap = provisionContext.getParameterMap();
                 validateParameters(parameterMap);
 
@@ -229,58 +231,112 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String provisionedIotDataEndpoint = "";
                 String provisionedIotCredentialsEndpoint = "";
 
+                logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", provisionEndpoint);
 
-
-                // Obtain cloud endpoint
+                // Obtain cloud endpoint with retry logic for DNS resolution failures
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
-                                ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
+                                ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
 
-                                // Connect
-                                MqttClientConnection mgmtConnection = mqttConnectionHelper
-                                                .getMqttConnection(mqttParameterBuilder
-                                                                .endpoint(provisionEndpoint)
-                                                                .clientBootstrap(clientBootstrap).build())) {
+                        MqttClientConnection mgmtConnection = null;
+                        boolean connectionEstablished = false;
+                        int maxRetries = 10; // Maximum number of retries
+                        int retryCount = 0;
 
+                        while (!connectionEstablished && retryCount < maxRetries) {
+                                logger.atInfo().log("Connection attempt #{} of {}", retryCount + 1, maxRetries);
+                                
+                                try {
+                                        // Attempt to create and connect MQTT connection
+                                        logger.atDebug().log("Creating MQTT connection to endpoint: {}", provisionEndpoint);
+                                        mgmtConnection = mqttConnectionHelper
+                                                        .getMqttConnection(mqttParameterBuilder
+                                                                        .endpoint(provisionEndpoint)
+                                                                        .clientBootstrap(clientBootstrap).build());
+
+                                        logger.atDebug().log("Attempting to connect MQTT connection...");
                                         CompletableFuture<Boolean> connected = mgmtConnection.connect();
                                         FutureExceptionHandler.getFutureAfterCompletion(connected,
                                             "Caught exception while establishing connection to AWS Iot");
+                                        
+                                        connectionEstablished = true;
+                                        logger.atInfo().log("Successfully established MQTT connection to provision endpoint on attempt #{}", retryCount + 1);
 
-                                        boolean success = false;
-                                        while (!success) {
+                                } catch (Exception e) {
+                                        retryCount++;
+                                        logger.atWarn().setCause(e)
+                                                .kv("attemptNumber", retryCount)
+                                                .kv("maxRetries", maxRetries)
+                                                .log("MQTT connection attempt #{} failed.", retryCount);
+
+                                        if (mgmtConnection != null) {
                                                 try {
-                                                        MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
-
-                                                        GetEndpointResponse getEndpointResponse = FutureExceptionHandler
-                                                            .getFutureAfterCompletion(
-                                                                mgmtCloudRouter.getEndpoint(clientId, signature),
-                                                                900,
-                                                                "Caught exception during getting endpoint from mgmt"
-                                                            );
-
-                                                        provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
-                                                        provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
-
-                                                        // If we get this far, we've successfully gotten claimed.
-                                                        success = true;
-                                                } catch (Exception e) {
-                                                        logger.atError()
-                                                            .log("Didn't receive endpoint. Is the device claimed? Retrying in 20 seconds.");
-                                                        TimeUnit.SECONDS.sleep(20);
+                                                        logger.atDebug().log("Cleaning up failed connection...");
+                                                        mgmtConnection.close();
+                                                } catch (Exception closeEx) {
+                                                        logger.atWarn().setCause(closeEx).log("Exception while closing failed connection");
                                                 }
-                                                
+                                                mgmtConnection = null;
                                         }
                                         
-                                        // disconnect
+                                        if (retryCount < maxRetries) {
+                                                logger.atWarn().setCause(e)
+                                                        .kv("retryCount", retryCount)
+                                                        .kv("maxRetries", maxRetries)
+                                                        .log("Failed to establish MQTT connection, retrying in 20 seconds... (attempt {} of {})", retryCount, maxRetries);
+                                                TimeUnit.SECONDS.sleep(20);
+                                        } else {
+                                                logger.atError().setCause(e)
+                                                        .log("Failed to establish MQTT connection after {} retries", maxRetries);
+                                                throw e;
+                                        }
+                                }
+                        }
+
+                        logger.atInfo().log("MQTT connection establishment. Getting claim status");
+
+                        try {
+                                boolean success = false;
+                                while (!success) {
+                                        try {
+                                                MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
+
+                                                GetEndpointResponse getEndpointResponse = FutureExceptionHandler
+                                                    .getFutureAfterCompletion(
+                                                        mgmtCloudRouter.getEndpoint(clientId, signature),
+                                                        900,
+                                                        "Caught exception during getting endpoint from mgmt"
+                                                    );
+
+                                                provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
+                                                provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
+
+                                                // If we get this far, we've successfully gotten claimed.
+                                                success = true;
+                                        } catch (Exception e) {
+                                                logger.atError()
+                                                    .log("Didn't receive endpoint. Is the device claimed? Retrying in 20 seconds.");
+                                                TimeUnit.SECONDS.sleep(20);
+                                        }
+                                        
+                                }
+                                
+                        } finally {
+                                // disconnect
+                                if (mgmtConnection != null) {
                                         CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
                                         FutureExceptionHandler.getFutureAfterCompletion(disconnected,
                                             "Caught exception while disconnecting");
+                                }
+                        }
 
                 } catch (CrtRuntimeException | InterruptedException ex) {
                         logger.atError().setCause(ex)
                                         .log("Exception encountered while getting claimed cloud endpoint information");
                         throw ex;
                 }
+
+                logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}", provisionedIotDataEndpoint);
 
                 // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);

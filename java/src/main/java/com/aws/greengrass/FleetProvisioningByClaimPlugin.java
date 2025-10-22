@@ -509,32 +509,36 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
         private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint, 
                                                         String iotCredEndpoint, String rootPath) {
-                try {
-                        // Store registerThingResponse.deviceConfiguration to some file in JSON format.
-
-                        JsonObject modifiedDeviceConfiguration = new JsonObject();
-                        modifiedDeviceConfiguration.addProperty("iotDataEndpoint", iotDataEndpoint);
-                        modifiedDeviceConfiguration.addProperty("iotCredEndpoint", iotCredEndpoint);
-
-                        for (Map.Entry<String, String> entry : response.deviceConfiguration.entrySet()) {
-                                modifiedDeviceConfiguration.addProperty(entry.getKey(), entry.getValue());
-                        }
-
-                        String jsonData = modifiedDeviceConfiguration.toString();
-
-                        Path confPath = Paths.get(rootPath, DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT);
-                        if (Files.notExists(confPath)) {
-                                Files.createDirectories(confPath.getParent());
-                                Files.createFile(confPath);
-                        }
-                        Files.write(confPath, jsonData.getBytes(StandardCharsets.UTF_8));
-                        Platform.getInstance().setPermissions(
-                            FileSystemPermission.builder().ownerRead(true).ownerWrite(true).build(), confPath);
-                } catch (IOException e) {
-                        logger.atError().log("Caught exception while writing device configuration to file");
-                        throw new DeviceProvisioningRuntimeException("Failed to write device configuration", e);
+            try {
+                // Write environment file only
+                StringBuilder envContent = new StringBuilder();
+                for (Map.Entry<String, String> entry : response.deviceConfiguration.entrySet()) {
+                    String envVarName = camelCaseToUpperSnakeCase(entry.getKey());
+                    envContent.append(envVarName)
+                             .append("=")
+                             .append(entry.getValue())
+                             .append("\n");
                 }
-
+      
+                Path envPath = Paths.get(rootPath, "/config/environment");
+                if (Files.notExists(envPath)) {
+                    Files.createDirectories(envPath.getParent());
+                    Files.createFile(envPath);
+                }
+                Files.write(envPath, envContent.toString().getBytes(StandardCharsets.UTF_8));
+                Platform.getInstance().setPermissions(
+                    FileSystemPermission.builder().ownerRead(true).groupRead(true).build(), envPath);
+      
+                logger.atInfo().log("Wrote device environment configuration to {}", envPath);
+      
+            } catch (IOException e) {
+                logger.atError().log("Caught exception while writing device configuration to file");
+                throw new DeviceProvisioningRuntimeException("Failed to write device configuration", e);
+            }
+        }
+      
+        private String camelCaseToUpperSnakeCase(String camelCase) {
+            return camelCase.replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase();
         }
 
         private void writeCertificateAndKeyToPath(CreateKeysAndCertificateResponse response, String rootPath) {

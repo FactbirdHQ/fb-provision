@@ -1,8 +1,0 @@
-[package]
-name = "blackbird-provision"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rustot = "^0.4"
-mqttrust = "^0.6"

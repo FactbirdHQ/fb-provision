@@ -143,7 +143,7 @@ public class FleetProvisioningByClaimPluginTest {
         provisionResponse.iotDataEndpoint = MOCK_IOT_DATA_ENDPOINT;
         provisionResponse.iotCredentialsEndpoint = MOCK_IOT_CREDENTIAL_ENDPOINT;
         provisionResponse.provisioningToken = MOCK_PROVISIONING_TOKEN;
-        lenient().when(mockProvisioningRouter.route(anyString(), anyString()))
+        lenient().when(mockProvisioningRouter.route(anyString()))
                 .thenReturn(CompletableFuture.completedFuture(provisionResponse));
     }
 
@@ -190,7 +190,7 @@ public class FleetProvisioningByClaimPluginTest {
             ProvisionConfiguration provisionConfiguration =
                     fleetProvisioningByClaimPlugin.updateIdentityConfiguration(provisionContext);
 
-            verify(mockProvisioningRouter).route(eq(MOCK_CLIENT_ID), eq(MOCK_SIGNATURE));
+            verify(mockProvisioningRouter).route(eq(MOCK_CLIENT_ID));
             verify(mockIotIdentityHelper).createKeysAndCertificate();
             verify(mockIotIdentityHelper).registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN),
                     eq(MOCK_PROV_TEMPLATE_NAME), any());

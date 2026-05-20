@@ -311,7 +311,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                                 // we tear the subscription down and start fresh.
                                                 ProvisionResponse provisionResponse = FutureExceptionHandler
                                                     .getFutureAfterCompletion(
-                                                        provisioningRouter.route(clientId, signature),
+                                                        provisioningRouter.route(clientId),
                                                         900,
                                                         "Caught exception during routing via fleet-management"
                                                     );

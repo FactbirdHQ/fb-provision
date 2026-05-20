@@ -1,176 +1,113 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net" type="device">
   <diagram id="provisioning-flow" name="Provisioning flow">
-    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="780" math="0" shadow="0">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="980" pageHeight="800" math="0" shadow="0">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
 
-        <!-- Lifelines (column headers) -->
-        <mxCell id="dev"
-                value="Device&#10;(Greengrass plugin)"
-                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="40" y="40" width="160" height="50" as="geometry"/>
+        <!-- ===== Lifelines ===== -->
+        <mxCell id="dev" value="Device&lt;br&gt;(Greengrass plugin)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="180" height="700" as="geometry"/>
         </mxCell>
-        <mxCell id="claim"
-                value="Claim broker&#10;(AWS IoT, mTLS)"
-                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="260" y="40" width="160" height="50" as="geometry"/>
+        <mxCell id="claim" value="Claim broker&lt;br&gt;(AWS IoT, mTLS)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="260" y="40" width="180" height="700" as="geometry"/>
         </mxCell>
-        <mxCell id="router"
-                value="Fleet-mgmt Router&#10;+ claim_reactor"
-                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="480" y="40" width="160" height="50" as="geometry"/>
+        <mxCell id="router" value="Fleet-mgmt Router&lt;br&gt;+ claim_reactor" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="40" width="180" height="700" as="geometry"/>
         </mxCell>
-        <mxCell id="tenant"
-                value="Tenant broker&#10;(AWS IoT, custom auth)"
-                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="700" y="40" width="160" height="50" as="geometry"/>
+        <mxCell id="tenant" value="Tenant broker&lt;br&gt;(AWS IoT, custom auth)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="40" width="180" height="700" as="geometry"/>
         </mxCell>
 
-        <!-- Lifeline strokes -->
-        <mxCell id="dev_line" style="endArrow=none;dashed=1;html=1;strokeColor=#6c8ebf"
-                edge="1" parent="1" source="dev">
+        <!-- ===== Phase 1: Routing ===== -->
+        <mxCell id="phase1" value="(1) Routing — claim-cert mTLS, ALPN x-amzn-mqtt-ca" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="540" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg1" value="connect (mTLS, claim cert)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="120" y="720" as="targetPoint"/>
+            <mxPoint x="130" y="155" as="sourcePoint"/>
+            <mxPoint x="350" y="155" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="claim_line" style="endArrow=none;dashed=1;html=1;strokeColor=#82b366"
-                edge="1" parent="1" source="claim">
+
+        <mxCell id="msg2" value="PUB provision/{uuid}/request&#10;(empty body)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="340" y="720" as="targetPoint"/>
+            <mxPoint x="130" y="195" as="sourcePoint"/>
+            <mxPoint x="570" y="195" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="router_line" style="endArrow=none;dashed=1;html=1;strokeColor=#d6b656"
-                edge="1" parent="1" source="router">
+
+        <mxCell id="msg3" value="SUB provision/{uuid}/response" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="560" y="720" as="targetPoint"/>
+            <mxPoint x="130" y="245" as="sourcePoint"/>
+            <mxPoint x="570" y="245" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="tenant_line" style="endArrow=none;dashed=1;html=1;strokeColor=#b85450"
-                edge="1" parent="1" source="tenant">
+
+        <mxCell id="msg4" value="PUB provision/{uuid}/response&#10;{ iotDataEndpoint, provisioningToken, ... }&#10;(immediate, or pushed later by claim_reactor on DDB stream)" style="endArrow=classic;html=1;rounded=0;strokeColor=#82B366;fontColor=#23445D;" edge="1" parent="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="780" y="720" as="targetPoint"/>
+            <mxPoint x="570" y="295" as="sourcePoint"/>
+            <mxPoint x="130" y="295" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
 
-        <!-- Phase 1: Routing -->
-        <mxCell id="phase1"
-                value="(1) Routing — claim-cert mTLS, ALPN x-amzn-mqtt-ca"
-                style="text;html=1;align=left;fontSize=12;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="40" y="105" width="540" height="20" as="geometry"/>
-        </mxCell>
-        <mxCell id="msg1" value="connect (mTLS, claim cert)"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5"
-                edge="1" parent="1" source="dev" target="claim">
-          <mxGeometry y="140" relative="1" as="geometry"/>
-        </mxCell>
-        <mxCell id="msg2"
-                value="PUB  provision/{uuid}/request&#10;{ uuid, signature }"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10"
-                edge="1" parent="1">
-          <mxGeometry y="170" relative="1" as="geometry">
-            <mxPoint x="120" y="170" as="sourcePoint"/>
-            <mxPoint x="560" y="170" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg3"
-                value="SUB  provision/{uuid}/response"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10"
-                edge="1" parent="1">
-          <mxGeometry y="210" relative="1" as="geometry">
-            <mxPoint x="120" y="210" as="sourcePoint"/>
-            <mxPoint x="560" y="210" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg4"
-                value="PUB  provision/{uuid}/response&#10;{ iotDataEndpoint, provisioningToken, ... }&#10;(immediate, or pushed later by claim_reactor on DDB stream)"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10;strokeColor=#82b366"
-                edge="1" parent="1">
-          <mxGeometry y="260" relative="1" as="geometry">
-            <mxPoint x="560" y="260" as="sourcePoint"/>
-            <mxPoint x="120" y="260" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg5"
-                value="disconnect"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5"
-                edge="1" parent="1" source="dev" target="claim">
-          <mxGeometry y="305" relative="1" as="geometry"/>
-        </mxCell>
-
-        <!-- Phase 2: Custom-auth provisioning -->
-        <mxCell id="phase2"
-                value="(2) Provisioning — custom authorizer, ALPN mqtt, no client cert"
-                style="text;html=1;align=left;fontSize=12;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="40" y="345" width="540" height="20" as="geometry"/>
-        </mxCell>
-        <mxCell id="msg6"
-                value="connect (TLS, no cert)&#10;username = uuid&#10;password = sig:token"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10"
-                edge="1" parent="1">
-          <mxGeometry y="390" relative="1" as="geometry">
-            <mxPoint x="120" y="390" as="sourcePoint"/>
-            <mxPoint x="780" y="390" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg7"
-                value="CreateCertificateFromCsr / RegisterThing&#10;(AWS IoT Fleet Provisioning)"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10;startArrow=classic"
-                edge="1" parent="1">
-          <mxGeometry y="440" relative="1" as="geometry">
-            <mxPoint x="120" y="440" as="sourcePoint"/>
-            <mxPoint x="780" y="440" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg8"
-                value="disconnect"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10"
-                edge="1" parent="1">
-          <mxGeometry y="485" relative="1" as="geometry">
-            <mxPoint x="120" y="485" as="sourcePoint"/>
-            <mxPoint x="780" y="485" as="targetPoint"/>
+        <mxCell id="msg5" value="disconnect" style="endArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="345" as="sourcePoint"/>
+            <mxPoint x="350" y="345" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
 
-        <!-- Phase 3: Production -->
-        <mxCell id="phase3"
-                value="(3) Production — mTLS production cert, ALPN x-amzn-mqtt-ca"
-                style="text;html=1;align=left;fontSize=12;fontStyle=1"
-                vertex="1" parent="1">
-          <mxGeometry x="40" y="525" width="540" height="20" as="geometry"/>
+        <!-- ===== Phase 2: Custom-auth provisioning ===== -->
+        <mxCell id="phase2" value="(2) Provisioning — custom authorizer, ALPN mqtt, no client cert" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="385" width="600" height="20" as="geometry"/>
         </mxCell>
-        <mxCell id="msg9"
-                value="connect (mTLS, production cert)"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10"
-                edge="1" parent="1">
-          <mxGeometry y="570" relative="1" as="geometry">
-            <mxPoint x="120" y="570" as="sourcePoint"/>
-            <mxPoint x="780" y="570" as="targetPoint"/>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="msg10"
-                value="normal MQTT traffic"
-                style="endArrow=classic;html=1;rounded=0;startSize=10;endSize=10;startArrow=classic;dashed=1"
-                edge="1" parent="1">
-          <mxGeometry y="620" relative="1" as="geometry">
-            <mxPoint x="120" y="620" as="sourcePoint"/>
-            <mxPoint x="780" y="620" as="targetPoint"/>
+
+        <mxCell id="msg6" value="connect (TLS, no cert)&#10;username = uuid&#10;password = sig:token" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="430" as="sourcePoint"/>
+            <mxPoint x="790" y="430" as="targetPoint"/>
           </mxGeometry>
         </mxCell>
 
-        <!-- Note -->
-        <mxCell id="note"
-                value="Phase 1's subscription stays open across Router error responses (e.g. &quot;device not claimed&quot;);&#10;claim_reactor publishes the success payload when the DynamoDB claim transition fires."
-                style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;darkOpacity=0.05;fillColor=#ffffcc;strokeColor=#999999"
-                vertex="1" parent="1">
-          <mxGeometry x="40" y="660" width="540" height="50" as="geometry"/>
+        <mxCell id="msg7" value="CreateCertificateFromCsr / RegisterThing&#10;(AWS IoT Fleet Provisioning)" style="endArrow=classic;startArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="490" as="sourcePoint"/>
+            <mxPoint x="790" y="490" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg8" value="disconnect" style="endArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="535" as="sourcePoint"/>
+            <mxPoint x="790" y="535" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===== Phase 3: Production ===== -->
+        <mxCell id="phase3" value="(3) Production — mTLS production cert, ALPN x-amzn-mqtt-ca" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="575" width="600" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg9" value="connect (mTLS, production cert)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="620" as="sourcePoint"/>
+            <mxPoint x="790" y="620" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg10" value="normal MQTT traffic" style="endArrow=classic;startArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="670" as="sourcePoint"/>
+            <mxPoint x="790" y="670" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===== Footnote ===== -->
+        <mxCell id="note" value="Phase 1's subscription stays open across Router error responses with code &lt;b&gt;notClaimed&lt;/b&gt;;&#10;claim_reactor publishes the success payload when the DynamoDB claim transition fires." style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#FFF2CC;strokeColor=#D6B656;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="715" width="600" height="55" as="geometry"/>
         </mxCell>
       </root>
     </mxGraphModel>

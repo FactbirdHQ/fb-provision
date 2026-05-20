@@ -24,6 +24,7 @@ import software.amazon.awssdk.iot.AwsIotMqttConnectionBuilder;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import javax.annotation.Nullable;
 
 public class MqttConnectionHelper {
@@ -47,21 +48,50 @@ public class MqttConnectionHelper {
     };
          
     /**
-     * Create mqtt connection using the given certificates, and endpoint.
+     * Create mqtt connection using the given parameters and endpoint.
+     *
+     * <p>Three builder shapes are supported:
+     * <ul>
+     *   <li>Custom authorizer (username + password, no client cert) — selected
+     *       when {@code customAuthUsername} is set. Used for the second-phase
+     *       provisioning connection to the tenant endpoint.</li>
+     *   <li>PKCS11 mTLS — selected when {@code tlsPkcsOptions} is set.</li>
+     *   <li>File-based mTLS — fallback, using {@code certPath} + {@code keyPath}.</li>
+     * </ul>
+     *
      * @param mqttConnectionParameters {@link MqttConnectionParameters}
      * @return {@link MqttClientConnection}
      */
     public MqttClientConnection getMqttConnection(MqttConnectionParameters mqttConnectionParameters) {
-        
-        // We create the builder with either PKCS11 or cert/key path, based on existance of TlsPkcsOptions
+
         AwsIotMqttConnectionBuilder builder;
-        if (mqttConnectionParameters.getTlsPkcsOptions() != null) {
+        if (mqttConnectionParameters.getCustomAuthUsername() != null) {
+            // Custom authorizer connection — no client cert. AWS IoT routes
+            // these via ALPN `mqtt` on port 443; the CRT builder selects the
+            // ALPN automatically when withCustomAuthorizer(...) is set.
+            String password = mqttConnectionParameters.getCustomAuthPassword() == null
+                ? null
+                : new String(mqttConnectionParameters.getCustomAuthPassword(), StandardCharsets.UTF_8);
+            try {
+                builder = AwsIotMqttConnectionBuilder.newDefaultBuilder();
+            } catch (java.io.UnsupportedEncodingException e) {
+                // newDefaultBuilder() declares this, but UTF-8 is always
+                // available on the JVM. Surface as runtime if it ever fires.
+                throw new IllegalStateException(
+                    "AwsIotMqttConnectionBuilder.newDefaultBuilder() threw UnsupportedEncodingException", e);
+            }
+            builder = builder.withCustomAuthorizer(
+                mqttConnectionParameters.getCustomAuthUsername(),
+                null,     // authorizerName: use account default
+                null,     // authorizerSignature: unsigned authorizer
+                password);
+        } else if (mqttConnectionParameters.getTlsPkcsOptions() != null) {
             builder = AwsIotMqttConnectionBuilder.newMtlsPkcs11Builder(
                 mqttConnectionParameters.getTlsPkcsOptions());
         } else {
             builder = AwsIotMqttConnectionBuilder.newMtlsBuilderFromPath(
                 mqttConnectionParameters.getCertPath(), mqttConnectionParameters.getKeyPath());
-        } 
+        }
 
         try (AwsIotMqttConnectionBuilder ignored = builder
             .withCertificateAuthorityFromPath(null, mqttConnectionParameters.getRootCaPath())
@@ -148,5 +178,17 @@ public class MqttConnectionHelper {
         private Integer mqttPort;
         private ClientBootstrap clientBootstrap;
         private HttpProxyOptions httpProxyOptions;
+        /**
+         * When set, switches the builder to a custom-authorizer (username +
+         * password, no client cert) connection. Used for the second-phase
+         * provisioning connection to the tenant endpoint.
+         */
+        private String customAuthUsername;
+        /**
+         * Password presented to the custom authorizer, byte[] so the caller
+         * can compose binary tokens without UTF-8 round-tripping. Encoded as
+         * UTF-8 at the builder boundary.
+         */
+        private byte[] customAuthPassword;
     }
 }

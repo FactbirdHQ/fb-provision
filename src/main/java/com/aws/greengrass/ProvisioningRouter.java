@@ -31,6 +31,15 @@ public class ProvisioningRouter {
 
     private static final Logger logger = LogManager.getLogger(ProvisioningRouter.class);
 
+    /**
+     * Router error message fragment indicating the device hasn't been
+     * claimed yet — matches the `RouterError::NotClaimed` Display impl in
+     * the cloud handler (`nest-2/.../router.rs`). Matched as a substring
+     * because the Router serialises errors as a free-form
+     * {@code anyhow::Error} chain string.
+     */
+    private static final String NOT_CLAIMED_FRAGMENT = "not claimed";
+
     private final ProvisioningRouterClient client;
 
     public ProvisioningRouter(MqttClientConnection connection) {
@@ -48,13 +57,21 @@ public class ProvisioningRouter {
      *
      * <p>The returned future completes when the Router (or its
      * claim_reactor counterpart on a DynamoDB stream event) publishes a
-     * success payload on {@code provision/{uuid}/response}. Router
-     * <em>error</em> payloads (e.g. "device not claimed") are logged and
-     * <strong>do not</strong> complete the future: the subscription stays
-     * open so the device receives the eventual success message pushed by
-     * claim_reactor when claim status flips. The caller is expected to
-     * apply an outer wall-clock timeout (~15 min) as a safety net in case
-     * the message is missed or the subscription failed silently.</p>
+     * success payload on {@code provision/{uuid}/response}.</p>
+     *
+     * <p>Router <em>error</em> payloads are handled differently
+     * depending on whether waiting longer could plausibly help:</p>
+     * <ul>
+     *   <li>{@code "device not claimed"} — the subscription is left
+     *       open and the future stays incomplete. claim_reactor pushes
+     *       a success payload to the same topic when the DynamoDB
+     *       claim transition fires. The caller's outer wall-clock
+     *       timeout (~15 min) is the safety net for a missed push.</li>
+     *   <li>Anything else (decommissioned, signature verification
+     *       failed, …) — the future is completed exceptionally so the
+     *       caller can tear down and retry, since the same error will
+     *       just repeat on the same subscription.</li>
+     * </ul>
      */
     public Future<ProvisionResponse> route(String uuid, String signature)
             throws InterruptedException, RetryableProvisioningException {
@@ -79,17 +96,27 @@ public class ProvisioningRouter {
                 QualityOfService.AT_LEAST_ONCE,
                 future::complete,
                 (errorResponse) -> {
-                    // Intentionally do NOT complete the future. The Router
-                    // returns "not claimed" / similar transient errors when
-                    // the device hasn't been claimed yet; claim_reactor will
-                    // push a success payload to the same topic when the
-                    // DynamoDB claim transition happens, and that completes
-                    // the future. The caller's outer ~15-min wall-clock
-                    // timeout is the safety net for missed messages.
-                    logger.atInfo().log(
-                            "Router responded with error: {}. Subscription stays open; "
-                                    + "claim_reactor will push when claim status flips.",
-                            errorResponse.error);
+                    String msg = errorResponse.error == null ? "" : errorResponse.error;
+                    if (msg.contains(NOT_CLAIMED_FRAGMENT)) {
+                        // claim_reactor will push a success payload to the
+                        // same topic when the DynamoDB claim transition
+                        // fires. Stay subscribed; the caller's wall-clock
+                        // timeout is the safety net for a missed push.
+                        logger.atInfo().log(
+                                "Router responded: {}. Subscription stays open; "
+                                        + "claim_reactor will push when claim status flips.",
+                                msg);
+                    } else {
+                        // Other Router errors (decommissioned, bad signature,
+                        // …) won't resolve by waiting on the same
+                        // subscription. Surface so the outer loop tears it
+                        // down and tries again from scratch.
+                        logger.atWarn().log(
+                                "Router rejected provisioning: {}. Reconnecting and retrying.",
+                                msg);
+                        future.completeExceptionally(new RetryableProvisioningException(
+                                "Router rejected provisioning: " + msg));
+                    }
                 },
                 (e) -> {
                     // Protocol-level deserialisation failure is a real bug

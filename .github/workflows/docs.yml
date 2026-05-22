@@ -79,6 +79,11 @@ jobs:
           output: .
           # Render directly next to the source, so docs/foo.drawio -> docs/foo.png.
           remove-page-suffix: true
+          # The workflow's `paths:` filter already gates on a .drawio
+          # change, so the action's default `auto` mode (which walks
+          # git history and needs a non-shallow checkout) would be
+          # redundant. Just render everything.
+          action-mode: all
 
       - name: Commit refreshed PNGs
         uses: stefanzweifel/git-auto-commit-action@v5

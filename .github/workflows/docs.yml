@@ -1,28 +1,89 @@
-on:
-  push:
-    paths:
-      - 'docs/*'
-
 name: Documentation
 
+# Two distinct concerns:
+#
+# 1. On every PR: validate the .drawio files are well-formed XML and
+#    conform to the mxfile schema, so a broken diagram fails CI before
+#    review. No commit-back, no special permissions.
+#
+# 2. On push to master: render each .drawio to a .png and commit the
+#    refreshed PNG. Requires `contents: write` on the workflow token,
+#    which only lands when the workflow runs in the upstream repo (PRs
+#    from forks intentionally skip this).
+#
+# We avoid running the render-and-commit job on PR branches because:
+#   - commit-back to a PR branch from a fork is impossible from upstream
+#     CI;
+#   - PRs that touch the .drawio would otherwise either silently fail
+#     the commit step or loop on auto-commits.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**.drawio'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**.drawio'
+      - '.github/workflows/docs.yml'
+
 jobs:
-  generate-docs:
-    name: Generate documentation
+  validate:
+    name: Validate diagrams
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        drawio: [provision]
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v2
-      - name: Convert diagram to png
-        uses: Burnett01/actions-drawio@1.2
+      - uses: actions/checkout@v4
+      - name: Install xmllint
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+      - name: Fetch mxfile.xsd
+        run: |
+          curl -fsSL -o /tmp/mxfile.xsd \
+            https://raw.githubusercontent.com/jgraph/drawio-mcp/main/shared/mxfile.xsd
+      - name: Validate every .drawio
+        run: |
+          set -e
+          shopt -s globstar nullglob
+          files=(docs/**/*.drawio)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no .drawio files found under docs/" >&2
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "Validating $f"
+            xmllint --noout --schema /tmp/mxfile.xsd "$f"
+          done
+
+  render:
+    name: Render PNGs and commit
+    # Only on push to master; never on PR. We don't want to push commits
+    # onto PR branches (fork-incompatible + recursion-prone), and the
+    # validate job above already gates the .drawio shape.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          src: docs/${{ matrix.drawio }}.drawio
-          dest: docs/${{ matrix.drawio }}.png
-      - name: Commit changes
-        uses: EndBug/add-and-commit@v9
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render diagrams to PNG
+        uses: rlespinasse/drawio-export-action@v2
         with:
-          author_name: Github actions
-          author_email: ci@actions.com
-          message: 'Update ${{ matrix.drawio }} documentation'
-          add: 'docs/${{ matrix.drawio }}.png'
+          path: docs
+          format: png
+          output: .
+          # Render directly next to the source, so docs/foo.drawio -> docs/foo.png.
+          remove-page-suffix: true
+
+      - name: Commit refreshed PNGs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'docs: regenerate diagrams [skip ci]'
+          file_pattern: 'docs/**/*.png'
+          # Don't make an empty commit if nothing changed.
+          skip_dirty_check: false

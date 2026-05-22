@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint, compile, test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Corretto 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: 11
+          cache: maven
+
+      # `mvn verify` runs the full pipeline:
+      #   - validate phase: maven-checkstyle-plugin against codestyle/checkstyle.xml
+      #   - compile phase: javac with Lombok via annotationProcessorPaths
+      #   - test phase: JUnit 5 + Mockito under jacoco-agent
+      #   - verify phase: jacoco coverage reports + threshold check
+      - name: Build, lint, test
+        run: mvn -B -ntp verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/**/*
+            target/jacoco-report/**/*
+          if-no-files-found: ignore

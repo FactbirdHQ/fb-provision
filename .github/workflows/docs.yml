@@ -89,8 +89,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: 'docs: regenerate diagrams [skip ci]'
-          # `docs/**/*.png` requires an intermediate directory and so
-          # misses `docs/foo.png` — list both depths explicitly.
-          file_pattern: 'docs/*.png docs/**/*.png'
+          # git pathspec `docs/**/*.png` requires an intermediate
+          # directory and so misses `docs/foo.png`. Listing both
+          # depths doesn't help either — git add aborts (exit 128) on
+          # *any* pathspec that matches nothing. We have no nested
+          # diagrams, so just match top-level PNGs.
+          file_pattern: 'docs/*.png'
           # Don't make an empty commit if nothing changed.
           skip_dirty_check: false

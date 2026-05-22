@@ -67,9 +67,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The default GITHUB_TOKEN can't push to master because the
+      # branch ruleset requires PRs + status checks. The "CI Token
+      # Generator" GitHub App is on the ruleset's bypass list, so we
+      # mint an installation token and use that for checkout/commit.
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PEM }}
+
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Render diagrams to PNG
         uses: rlespinasse/drawio-export-action@v2

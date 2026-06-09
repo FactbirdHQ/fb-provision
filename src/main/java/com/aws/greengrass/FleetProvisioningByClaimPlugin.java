@@ -81,6 +81,16 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String PROXY_URL_PARAMETER_NAME = "proxyUrl";
         static final String PROXY_USERNAME_PARAMETER_NAME = "proxyUsername";
         static final String PROXY_PASSWORD_PARAMETER_NAME = "proxyPassword";
+
+        // Direct-mode parameters. When all three are set, the plugin skips the
+        // fleet-management Router round-trip and uses the supplied token +
+        // endpoints to go straight into the tenant MQTT custom-auth flow.
+        // Used by supervisor-driven flows (e.g. factbird-factory) where the
+        // host process has already obtained a ProvisioningToken out-of-band
+        // and there is no claim cert / mgmt MQTT endpoint to talk to.
+        static final String PROVISIONING_TOKEN_PARAMETER_NAME = "provisioningToken";
+        static final String IOT_DATA_ENDPOINT_PARAMETER_NAME = "iotDataEndpoint";
+        static final String IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME = "iotCredentialsEndpoint";
          
 
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
@@ -134,14 +144,23 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 Map<String, Object> parameterMap = provisionContext.getParameterMap();
                 validateParameters(parameterMap);
 
-                String certPath = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString();
-                String keyPath = parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
+                // Direct-mode signal: token + endpoints supplied via component config,
+                // no Router round-trip needed.
+                String configuredToken = parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME).toString();
+                boolean directMode = configuredToken != null && !configuredToken.isEmpty();
+
+                String certPath = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString();
+                String keyPath = parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
                 String signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
                 Integer mqttPort = null;
                 if (parameterMap.get(MQTT_PORT_PARAMETER_NAME) != null) {
                         mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
                 }
-                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
+                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME) == null ? null
+                                : parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
                 boolean useTpmProvisioning = false;
                 if (parameterMap.get(USE_TPM_PROV_PARAMETER_NAME) != null) {
                         Object value = parameterMap.get(USE_TPM_PROV_PARAMETER_NAME);
@@ -178,15 +197,19 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 // Initialize PKCS11 provider and extract the key labels
                 if (useTpmProvisioning) {
                         pkcsProviderInstance = new PkcsProvider(pkcs11Library, pkcs11UserPin, pkcs11Slot,
-                                AUTH_KEY_LABEL);       
+                                AUTH_KEY_LABEL);
                         SIGN_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(signKeyPath);
-                        CLAIM_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(certPath);
-
-                        // if either of the labels are not found, throw an exception
-                        if (SIGN_KEY_LABEL == null || CLAIM_KEY_LABEL == null) {
-                                throw new DeviceProvisioningRuntimeException("Failed to extract key labels from URI's");
+                        if (SIGN_KEY_LABEL == null) {
+                                throw new DeviceProvisioningRuntimeException("Failed to extract SIGN key label");
                         }
-                } 
+                        // Direct mode has no claim cert — the Router round-trip is skipped.
+                        if (certPath != null && !certPath.isEmpty()) {
+                                CLAIM_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(certPath);
+                                if (CLAIM_KEY_LABEL == null) {
+                                        throw new DeviceProvisioningRuntimeException("Failed to extract CLAIM key label");
+                                }
+                        }
+                }
 
                 // Sign the clientId with the private key
                 try {
@@ -204,41 +227,54 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         throw new InterruptedException();
                 }
 
-                // Create the MQTT connection parameters
-                MqttConnectionParametersBuilder mqttParameterBuilder = null;
-                if (useTpmProvisioning) {
-                        TlsContextPkcs11Options options = pkcsProviderInstance.createTlsContextPkcs11Options(CLAIM_KEY_LABEL); 
-                        mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
-                                        .builder()
-                                        .certificateUri(certPath)
-                                        .privKeyUri(keyPath)
-                                        .rootCaPath(rootCaPath)
-                                        .clientId(clientId)
-                                        .tlsPkcsOptions(options)
-                                        .httpProxyOptions(httpProxyOptions)
-                                        .mqttPort(mqttPort);
+                String provisionedIotDataEndpoint;
+                String provisionedIotCredentialsEndpoint;
+                String provisioningToken;
+
+                if (directMode) {
+                        // Supervisor-driven flow: the host process already owns a
+                        // mgmt-signed ProvisioningToken and knows the tenant endpoints.
+                        // Skip the Router round-trip and head straight to Phase 2.
+                        logger.atInfo().log("Direct provisioning mode: token + endpoints supplied via component config");
+                        provisioningToken = configuredToken;
+                        provisionedIotDataEndpoint = parameterMap.get(IOT_DATA_ENDPOINT_PARAMETER_NAME).toString();
+                        provisionedIotCredentialsEndpoint = parameterMap.get(IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME).toString();
                 } else {
-                        mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
-                                        .builder()
-                                        .certificateUri(certPath)
-                                        .privKeyUri(keyPath)
-                                        .rootCaPath(rootCaPath)
-                                        .clientId(clientId)
-                                        .tlsPkcsOptions(null)
-                                        .httpProxyOptions(httpProxyOptions)
-                                        .mqttPort(mqttPort);
-                }
+                        provisionedIotDataEndpoint = "";
+                        provisionedIotCredentialsEndpoint = "";
+                        provisioningToken = "";
 
-                String provisionedIotDataEndpoint = "";
-                String provisionedIotCredentialsEndpoint = "";
-                String provisioningToken = "";
+                        // Create the MQTT connection parameters
+                        MqttConnectionParametersBuilder mqttParameterBuilder = null;
+                        if (useTpmProvisioning) {
+                                TlsContextPkcs11Options options = pkcsProviderInstance.createTlsContextPkcs11Options(CLAIM_KEY_LABEL);
+                                mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
+                                                .builder()
+                                                .certificateUri(certPath)
+                                                .privKeyUri(keyPath)
+                                                .rootCaPath(rootCaPath)
+                                                .clientId(clientId)
+                                                .tlsPkcsOptions(options)
+                                                .httpProxyOptions(httpProxyOptions)
+                                                .mqttPort(mqttPort);
+                        } else {
+                                mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
+                                                .builder()
+                                                .certificateUri(certPath)
+                                                .privKeyUri(keyPath)
+                                                .rootCaPath(rootCaPath)
+                                                .clientId(clientId)
+                                                .tlsPkcsOptions(null)
+                                                .httpProxyOptions(httpProxyOptions)
+                                                .mqttPort(mqttPort);
+                        }
 
-                logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", provisionEndpoint);
+                        logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", provisionEndpoint);
 
-                // Obtain cloud endpoint with retry logic for DNS resolution failures
-                try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
-                                HostResolver resolver = new HostResolver(eventLoopGroup);
-                                ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
+                        // Obtain cloud endpoint with retry logic for DNS resolution failures
+                        try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
+                                        HostResolver resolver = new HostResolver(eventLoopGroup);
+                                        ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
 
                         MqttClientConnection mgmtConnection = null;
                         boolean connectionEstablished = false;
@@ -340,10 +376,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 }
                         }
 
-                } catch (CrtRuntimeException | InterruptedException ex) {
-                        logger.atError().setCause(ex)
-                                        .log("Exception encountered while getting claimed cloud endpoint information");
-                        throw ex;
+                        } catch (CrtRuntimeException | InterruptedException ex) {
+                                logger.atError().setCause(ex)
+                                                .log("Exception encountered while getting claimed cloud endpoint information");
+                                throw ex;
+                        }
                 }
 
                 logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}", provisionedIotDataEndpoint);
@@ -456,13 +493,26 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         private void validateParameters(Map<String, Object> parameterMap) {
                 logger.atDebug().kv("parameters", parameterMap.toString()).log("The parameter map for plugin is ");
                 List<String> errors = new ArrayList<>();
-                checkRequiredParameterPresent(parameterMap, errors, PROVISION_ENDPOINT_PARAMETER_NAME);
+
+                // Always required.
                 checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
-                checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
-                checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_CA_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_PATH_PARAMETER_NAME);
+
+                boolean directMode = parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME) != null
+                                && !Utils.isEmpty(parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME).toString());
+
+                if (directMode) {
+                        // Token + endpoints supplied directly; no Router round-trip and no claim cert needed.
+                        checkRequiredParameterPresent(parameterMap, errors, IOT_DATA_ENDPOINT_PARAMETER_NAME);
+                        checkRequiredParameterPresent(parameterMap, errors, IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME);
+                } else {
+                        // Router-mode: connect to mgmt MQTT with the claim cert to obtain the token.
+                        checkRequiredParameterPresent(parameterMap, errors, PROVISION_ENDPOINT_PARAMETER_NAME);
+                        checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
+                        checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
+                }
 
                 if (!errors.isEmpty()) {
                         throw new RuntimeException(errors.toString());
@@ -498,8 +548,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 String confPrivateKeyPath = null;
                 String confCertPath = null;
 
-                // If the claim certificate was a pkcs11 URI, then the we assume we've been running the pkcs11 flow
-                if (parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString().contains("pkcs11")) {
+                // Router-mode legacy: presence of a pkcs11 URI on the claim cert path
+                // signalled the pkcs11 flow. In direct mode there's no claim cert, so
+                // fall back to `useTpmProvisioning` for the same intent.
+                Object claimCertParam = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
+                boolean pkcs11Mode = (claimCertParam != null && !Utils.isEmpty(claimCertParam.toString()))
+                                ? claimCertParam.toString().contains("pkcs11")
+                                : isUseTpmProvisioning(parameterMap);
+                if (pkcs11Mode) {
                         confPrivateKeyPath = "pkcs11:object=" + AUTH_KEY_LABEL + ";type=private";
                         confCertPath = "pkcs11:object=" + AUTH_KEY_LABEL + ";type=cert";
                 } else {
@@ -521,6 +577,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .systemConfiguration(systemConfiguration)
                                 .nucleusConfiguration(nucleusConfiguration)
                                 .build();
+        }
+
+        private static boolean isUseTpmProvisioning(Map<String, Object> parameterMap) {
+                Object value = parameterMap.get(USE_TPM_PROV_PARAMETER_NAME);
+                if (value == null) {
+                        return false;
+                }
+                return value instanceof Boolean ? (Boolean) value : Boolean.parseBoolean(value.toString());
         }
 
         private void checkRequiredParameterPresent(Map<String, Object> parameterMap, List<String> errors,

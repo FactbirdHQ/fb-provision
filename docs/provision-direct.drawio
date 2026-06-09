@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="provisioning-direct" name="Direct provisioning flow">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="980" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ===== Lifelines ===== -->
+        <mxCell id="sup" value="Supervisor&lt;br&gt;(host process)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="180" height="700" as="geometry"/>
+        </mxCell>
+        <mxCell id="dev" value="Device&lt;br&gt;(Greengrass plugin)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="40" width="180" height="700" as="geometry"/>
+        </mxCell>
+        <mxCell id="tenant" value="Tenant broker&lt;br&gt;(AWS IoT, custom auth)" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="40" width="180" height="700" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== Phase 1: Direct bootstrap ===== -->
+        <mxCell id="phase1" value="(1) Bootstrap — direct mode (no Router round-trip)" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="540" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg1" value="receive encoded ProvisioningToken&#10;(env var / cloud-init / first-boot prompt)" style="endArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="40" y="155" as="sourcePoint"/>
+            <mxPoint x="130" y="155" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg2" value="decode + verify signature locally&#10;(against embedded mgmt pubkey)" style="endArrow=classic;html=1;rounded=0;curved=1;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sup" target="sup">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="80" y="195" as="sourcePoint"/>
+            <mxPoint x="200" y="195" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg3" value="extract claims:&#10;iotDataEndpoint, iotCredentialsEndpoint,&#10;intendedDeviceType, dockerAuth, exp" style="text;html=1;align=left;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="225" width="280" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg4" value="write Greengrass config&#10;(provisioningToken, iotDataEndpoint,&#10;iotCredentialsEndpoint set as component config)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="305" as="sourcePoint"/>
+            <mxPoint x="410" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg5" value="start Greengrass nucleus&#10;(loads FleetProvisioningByClaim plugin)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="130" y="350" as="sourcePoint"/>
+            <mxPoint x="410" y="350" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===== Phase 2: Custom-auth provisioning ===== -->
+        <mxCell id="phase2" value="(2) Provisioning — custom authorizer, ALPN mqtt, no client cert" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="395" width="600" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg6" value="connect (TLS, no cert)&#10;username = uuid&#10;password = sig:token" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="410" y="440" as="sourcePoint"/>
+            <mxPoint x="690" y="440" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg7" value="CreateCertificateFromCsr / RegisterThing&#10;(AWS IoT Fleet Provisioning)" style="endArrow=classic;startArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="410" y="500" as="sourcePoint"/>
+            <mxPoint x="690" y="500" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg8" value="disconnect" style="endArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="410" y="545" as="sourcePoint"/>
+            <mxPoint x="690" y="545" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===== Phase 3: Production ===== -->
+        <mxCell id="phase3" value="(3) Production — mTLS production cert, ALPN x-amzn-mqtt-ca" style="text;html=1;align=left;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="585" width="600" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg9" value="connect (mTLS, production cert)" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="410" y="630" as="sourcePoint"/>
+            <mxPoint x="690" y="630" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="msg10" value="normal MQTT traffic" style="endArrow=classic;startArrow=classic;html=1;rounded=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="410" y="680" as="sourcePoint"/>
+            <mxPoint x="690" y="680" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===== Footnote ===== -->
+        <mxCell id="note" value="Direct mode skips the fleet-management Router round-trip entirely.&#10;The supervisor obtained the ProvisioningToken out-of-band (e.g. customer-issued via SaaS frontend), decoded and verified it locally,&#10;then handed the still-encoded blob plus the embedded endpoints to the plugin via component config." style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#E1D5E7;strokeColor=#9673A6;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="715" width="740" height="55" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

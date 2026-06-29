@@ -1,3 +1,8 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Modifications Copyright 2022-2026 Factbird ApS. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.aws.greengrass;
 
 import com.aws.greengrass.logging.api.Logger;

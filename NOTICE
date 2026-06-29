@@ -1,1 +1,13 @@
-Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Factbird Fleet Provisioning Plugin
+Copyright 2022-2026 Factbird ApS. All Rights Reserved.
+
+This product is a modified fork of the AWS Greengrass Fleet Provisioning by
+Claim plugin and includes software developed by Amazon.com, Inc. and its
+affiliates. The following notice applies to the portions of this software
+derived from that upstream project
+(https://github.com/aws-greengrass/aws-greengrass-fleet-provisioning-by-claim):
+
+    Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+Portions of this software have been created and modified by Factbird ApS and
+are distributed under the same Apache License, Version 2.0.

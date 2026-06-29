@@ -12,7 +12,7 @@
 
     <groupId>com.aws.greengrass</groupId>
     <artifactId>aws-fleet-provisioning-plugin</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.1.0</version>
     <repositories>
         <repository>
             <id>greengrass-common</id>

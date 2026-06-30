@@ -42,10 +42,13 @@ import static com.aws.greengrass.FleetProvisioningByClaimPlugin.AWS_REGION_PARAM
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.CLAIM_CERTIFICATE_PATH_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT;
+import static com.aws.greengrass.FleetProvisioningByClaimPlugin.IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME;
+import static com.aws.greengrass.FleetProvisioningByClaimPlugin.IOT_DATA_ENDPOINT_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PRIVATE_KEY_PATH_RELATIVE_TO_ROOT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISION_ENDPOINT_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISIONING_TEMPLATE_PARAMETER_NAME;
+import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISIONING_TOKEN_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROXY_URL_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.ROOT_CA_PATH_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.ROOT_PATH_PARAMETER_NAME;
@@ -289,6 +292,55 @@ public class FleetProvisioningByClaimPluginTest {
 
         assertTrue(thrown instanceof InterruptedException || thrown instanceof CrtRuntimeException,
                 "Expected InterruptedException or CrtRuntimeException but got: " + thrown.getClass().getName());
+    }
+
+    @Test
+    public void GIVEN_direct_mode_with_token_and_endpoints_WHEN_validating_THEN_router_params_not_required() {
+        Map<String, Object> parameterMap = new HashMap<>();
+        // Required in both modes.
+        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, MOCK_PROV_TEMPLATE_NAME);
+        parameterMap.put(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME, signKeyPath.toString());
+        parameterMap.put(ROOT_CA_PATH_PARAMETER_NAME, rootCAPath.toString());
+        parameterMap.put(ROOT_PATH_PARAMETER_NAME, rootDir);
+        // Direct-mode triple.
+        parameterMap.put(PROVISIONING_TOKEN_PARAMETER_NAME, MOCK_PROVISIONING_TOKEN);
+        parameterMap.put(IOT_DATA_ENDPOINT_PARAMETER_NAME, MOCK_IOT_DATA_ENDPOINT);
+        parameterMap.put(IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME, MOCK_IOT_CREDENTIAL_ENDPOINT);
+        // Validation should not fail with router-mode missing-parameter errors.
+        // The flow may still throw later (CRT init, mocks not set up) — we only
+        // assert here that validation accepts the direct-mode parameter set.
+        Exception e = assertThrows(Exception.class,
+                () -> fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap)));
+        String errorMessage = e.getMessage() == null ? "" : e.getMessage();
+        assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                PROVISION_ENDPOINT_PARAMETER_NAME)));
+        assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                CLAIM_CERTIFICATE_PATH_PARAMETER_NAME)));
+        assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME)));
+    }
+
+    @Test
+    public void GIVEN_direct_mode_missing_endpoints_WHEN_validating_THEN_endpoint_errors_reported() {
+        Map<String, Object> parameterMap = new HashMap<>();
+        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, MOCK_PROV_TEMPLATE_NAME);
+        parameterMap.put(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME, signKeyPath.toString());
+        parameterMap.put(ROOT_CA_PATH_PARAMETER_NAME, rootCAPath.toString());
+        parameterMap.put(ROOT_PATH_PARAMETER_NAME, rootDir);
+        // Direct mode signalled, but endpoints omitted.
+        parameterMap.put(PROVISIONING_TOKEN_PARAMETER_NAME, MOCK_PROVISIONING_TOKEN);
+        Exception e = assertThrows(RuntimeException.class,
+                () -> fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap)));
+        String errorMessage = e.getMessage();
+        assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                IOT_DATA_ENDPOINT_PARAMETER_NAME)));
+        assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME)));
+        // Router-mode params should not be reported as missing when in direct mode.
+        assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                PROVISION_ENDPOINT_PARAMETER_NAME)));
     }
 
     private Future<RegisterThingResponse> createMockRegisterThingResponse() {

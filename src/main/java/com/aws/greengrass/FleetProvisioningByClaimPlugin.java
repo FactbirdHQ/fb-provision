@@ -246,8 +246,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                         // Create the MQTT connection parameters
                         MqttConnectionParametersBuilder mqttParameterBuilder = null;
+                        // Hoisted so the claim PKCS#11 TLS options can be closed once the
+                        // claim round-trip is done (see the finally below).
+                        TlsContextPkcs11Options options = null;
                         if (useTpmProvisioning) {
-                                TlsContextPkcs11Options options = pkcsProviderInstance.createTlsContextPkcs11Options(CLAIM_KEY_LABEL);
+                                options = pkcsProviderInstance.createTlsContextPkcs11Options(CLAIM_KEY_LABEL);
                                 mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
                                                 .builder()
                                                 .certificateUri(certPath)
@@ -368,11 +371,21 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 }
 
                         } finally {
-                                // disconnect
+                                // The claim cert/key is only needed for this first
+                                // connection. Fully tear it down — disconnect AND close the
+                                // connection plus the PKCS#11 TLS options — so the TPM
+                                // unloads the claim key before Phase 2. The provision keygen
+                                // needs those transient object slots; TPMs only guarantee
+                                // ~3, so a still-resident claim key makes CreateLoaded fail
+                                // with TPM_RC_OBJECT_MEMORY (0x902).
                                 if (mgmtConnection != null) {
                                         CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
                                         FutureExceptionHandler.getFutureAfterCompletion(disconnected,
                                             "Caught exception while disconnecting");
+                                        mgmtConnection.close();
+                                }
+                                if (options != null) {
+                                        options.close();
                                 }
                         }
 

@@ -20,7 +20,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.lang.reflect.Constructor;
-import java.math.BigInteger;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -392,8 +391,15 @@ public class PkcsProvider {
             // Perform the signing operation
             byte[] signedData = signature.sign();
 
-            // Convert the signature to a hexadecimal string
-            return new BigInteger(1, signedData).toString(16);
+            // Encode the raw P1363 (r||s) signature as fixed-width hex.
+            // BigInteger(1, ...).toString(16) drops leading zero bytes, yielding
+            // an odd-length/short string the fleet authorizer rejects with
+            // "ATECC signature not valid hex".
+            StringBuilder hex = new StringBuilder(signedData.length * 2);
+            for (byte b : signedData) {
+                hex.append(String.format("%02x", b & 0xFF));
+            }
+            return hex.toString();
         } catch (Exception e) {
             throw new RuntimeException("Failed to sign data using TPM: " + e.getMessage(), e);
         }

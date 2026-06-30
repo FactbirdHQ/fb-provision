@@ -11,7 +11,6 @@ import com.aws.greengrass.logging.impl.LogManager;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.math.BigInteger;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.security.GeneralSecurityException;
@@ -59,6 +58,14 @@ public class DeviceIdentityHelper {
 
             byte[] signature = privateSignature.sign();
 
-            return new BigInteger(1, signature).toString(16);
+            // Encode the raw P1363 (r||s) signature as fixed-width hex.
+            // BigInteger(1, ...).toString(16) drops leading zero bytes, yielding
+            // an odd-length/short string the fleet authorizer rejects with
+            // "ATECC signature not valid hex".
+            StringBuilder hex = new StringBuilder(signature.length * 2);
+            for (byte b : signature) {
+                hex.append(String.format("%02x", b & 0xFF));
+            }
+            return hex.toString();
     }
 }

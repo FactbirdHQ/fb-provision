@@ -5,7 +5,12 @@
 
 package com.aws.greengrass.model;
 
-public class GetEndpointResponse {
+/**
+ * Success payload published by the fleet-management Router on
+ * {@code provision/{uuid}/response}.
+ */
+public class ProvisionResponse {
     public String iotDataEndpoint;
     public String iotCredentialsEndpoint;
+    public String provisioningToken;
 }

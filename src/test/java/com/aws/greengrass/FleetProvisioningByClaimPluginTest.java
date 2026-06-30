@@ -6,7 +6,7 @@
 
 package com.aws.greengrass;
 
-import com.aws.greengrass.model.GetEndpointResponse;
+import com.aws.greengrass.model.ProvisionResponse;
 import com.aws.greengrass.provisioning.ProvisionConfiguration;
 import com.aws.greengrass.provisioning.ProvisionContext;
 import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException;
@@ -83,6 +83,7 @@ public class FleetProvisioningByClaimPluginTest {
     private static final String MOCK_CLIENT_ID = "MOCK_CLIENT_ID";
     private static final String MOCK_SIGNATURE = "MOCK_SIGNATURE";
     private static final String MOCK_PROVISION_ENDPOINT = "MOCK_PROVISION_ENDPOINT";
+    private static final String MOCK_PROVISIONING_TOKEN = "MOCK_PROVISIONING_TOKEN";
 
     @TempDir
     Path rootDir;
@@ -98,9 +99,9 @@ public class FleetProvisioningByClaimPluginTest {
     @Mock
     private IotIdentityHelper mockIotIdentityHelper;
     @Mock
-    private MgmtCloudRouterFactory mgmtCloudRouterFactory;
+    private ProvisioningRouterFactory provisioningRouterFactory;
     @Mock
-    private MgmtCloudRouter mockMgmtCloudRouter;
+    private ProvisioningRouter mockProvisioningRouter;
     @Mock
     private MqttConnectionHelper mqttConnectionHelper;
     @Mock
@@ -125,12 +126,12 @@ public class FleetProvisioningByClaimPluginTest {
         ignoreExceptionUltimateCauseOfType(context, CrtRuntimeException.class);
         fleetProvisioningByClaimPlugin = new FleetProvisioningByClaimPlugin(
                 iotIdentityHelperFactory,
-                mgmtCloudRouterFactory,
+                provisioningRouterFactory,
                 mqttConnectionHelper,
                 deviceIdentityHelper);
 
         lenient().when(iotIdentityHelperFactory.getInstance(any())).thenReturn(mockIotIdentityHelper);
-        lenient().when(mgmtCloudRouterFactory.getInstance(any())).thenReturn(mockMgmtCloudRouter);
+        lenient().when(provisioningRouterFactory.getInstance(any())).thenReturn(mockProvisioningRouter);
         lenient().when(mqttConnectionHelper.getMqttConnection(any())).thenReturn(mockConnection);
         lenient().when(mockConnection.connect()).thenReturn(CompletableFuture.completedFuture(true));
         lenient().when(mockConnection.disconnect()).thenReturn(CompletableFuture.completedFuture(null));
@@ -138,11 +139,12 @@ public class FleetProvisioningByClaimPluginTest {
         lenient().when(deviceIdentityHelper.sign(anyString(), any(PrivateKey.class))).thenReturn(MOCK_SIGNATURE);
         lenient().when(deviceIdentityHelper.readPrivateKey(any(File.class))).thenReturn(null);
 
-        GetEndpointResponse getEndpointResponse = new GetEndpointResponse();
-        getEndpointResponse.iotDataEndpoint = MOCK_IOT_DATA_ENDPOINT;
-        getEndpointResponse.iotCredentialsEndpoint = MOCK_IOT_CREDENTIAL_ENDPOINT;
-        lenient().when(mockMgmtCloudRouter.getEndpoint(anyString(), anyString()))
-                .thenReturn(CompletableFuture.completedFuture(getEndpointResponse));
+        ProvisionResponse provisionResponse = new ProvisionResponse();
+        provisionResponse.iotDataEndpoint = MOCK_IOT_DATA_ENDPOINT;
+        provisionResponse.iotCredentialsEndpoint = MOCK_IOT_CREDENTIAL_ENDPOINT;
+        provisionResponse.provisioningToken = MOCK_PROVISIONING_TOKEN;
+        lenient().when(mockProvisioningRouter.route(anyString()))
+                .thenReturn(CompletableFuture.completedFuture(provisionResponse));
     }
 
     @Test
@@ -188,7 +190,7 @@ public class FleetProvisioningByClaimPluginTest {
             ProvisionConfiguration provisionConfiguration =
                     fleetProvisioningByClaimPlugin.updateIdentityConfiguration(provisionContext);
 
-            verify(mockMgmtCloudRouter).getEndpoint(eq(MOCK_CLIENT_ID), eq(MOCK_SIGNATURE));
+            verify(mockProvisioningRouter).route(eq(MOCK_CLIENT_ID));
             verify(mockIotIdentityHelper).createKeysAndCertificate();
             verify(mockIotIdentityHelper).registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN),
                     eq(MOCK_PROV_TEMPLATE_NAME), any());

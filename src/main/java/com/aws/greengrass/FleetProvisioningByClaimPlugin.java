@@ -9,7 +9,7 @@ package com.aws.greengrass;
 import com.aws.greengrass.MqttConnectionHelper.MqttConnectionParameters.MqttConnectionParametersBuilder;
 import com.aws.greengrass.logging.api.Logger;
 import com.aws.greengrass.logging.impl.LogManager;
-import com.aws.greengrass.model.GetEndpointResponse;
+import com.aws.greengrass.model.ProvisionResponse;
 import com.aws.greengrass.pkcs.PkcsProvider;
 import com.aws.greengrass.provisioning.DeviceIdentityInterface;
 import com.aws.greengrass.provisioning.ProvisionConfiguration;
@@ -95,26 +95,26 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String AUTH_KEY_LABEL = "auth";
 
         private final IotIdentityHelperFactory iotIdentityHelperFactory;
-        private final MgmtCloudRouterFactory mgmtCloudRouterFactory;
+        private final ProvisioningRouterFactory provisioningRouterFactory;
         private final MqttConnectionHelper mqttConnectionHelper;
         private final DeviceIdentityHelper deviceIdentityHelper;
 
         /** Run AWS Fleet provisioning by claim flow.
-         * 
+         *
          */
         public FleetProvisioningByClaimPlugin() {
                 iotIdentityHelperFactory = new IotIdentityHelperFactory();
-                mgmtCloudRouterFactory = new MgmtCloudRouterFactory();
+                provisioningRouterFactory = new ProvisioningRouterFactory();
                 mqttConnectionHelper = new MqttConnectionHelper();
                 deviceIdentityHelper = new DeviceIdentityHelper();
         }
 
         FleetProvisioningByClaimPlugin(IotIdentityHelperFactory iotIdentityHelperFactory,
-                        MgmtCloudRouterFactory mgmtCloudRouterFactory,
+                        ProvisioningRouterFactory provisioningRouterFactory,
                         MqttConnectionHelper mqttConnectionHelper,
                         DeviceIdentityHelper deviceIdentityHelper) {
                 this.iotIdentityHelperFactory = iotIdentityHelperFactory;
-                this.mgmtCloudRouterFactory = mgmtCloudRouterFactory;
+                this.provisioningRouterFactory = provisioningRouterFactory;
                 this.mqttConnectionHelper = mqttConnectionHelper;
                 this.deviceIdentityHelper = deviceIdentityHelper;
         }
@@ -231,6 +231,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 String provisionedIotDataEndpoint = "";
                 String provisionedIotCredentialsEndpoint = "";
+                String provisioningToken = "";
 
                 logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", provisionEndpoint);
 
@@ -300,28 +301,36 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 boolean success = false;
                                 while (!success) {
                                         try {
-                                                MgmtCloudRouter mgmtCloudRouter = mgmtCloudRouterFactory.getInstance(mgmtConnection);
+                                                ProvisioningRouter provisioningRouter = provisioningRouterFactory.getInstance(mgmtConnection);
 
-                                                GetEndpointResponse getEndpointResponse = FutureExceptionHandler
+                                                // The future completes only on a Router success payload —
+                                                // either the device is already claimed (immediate response)
+                                                // or claim_reactor pushes one when the claim transition fires
+                                                // on the DynamoDB stream. The 900s wall-clock timeout is a
+                                                // safety net for a silently-dropped subscription; on timeout
+                                                // we tear the subscription down and start fresh.
+                                                ProvisionResponse provisionResponse = FutureExceptionHandler
                                                     .getFutureAfterCompletion(
-                                                        mgmtCloudRouter.getEndpoint(clientId, signature),
+                                                        provisioningRouter.route(clientId),
                                                         900,
-                                                        "Caught exception during getting endpoint from mgmt"
+                                                        "Caught exception during routing via fleet-management"
                                                     );
 
-                                                provisionedIotDataEndpoint = getEndpointResponse.iotDataEndpoint;
-                                                provisionedIotCredentialsEndpoint = getEndpointResponse.iotCredentialsEndpoint;
+                                                provisionedIotDataEndpoint = provisionResponse.iotDataEndpoint;
+                                                provisionedIotCredentialsEndpoint = provisionResponse.iotCredentialsEndpoint;
+                                                provisioningToken = provisionResponse.provisioningToken;
 
-                                                // If we get this far, we've successfully gotten claimed.
+                                                // If we get this far, the Router resolved us to a tenant.
                                                 success = true;
                                         } catch (Exception e) {
-                                                logger.atError()
-                                                    .log("Didn't receive endpoint. Is the device claimed? Retrying in 20 seconds.");
+                                                logger.atWarn()
+                                                    .log("Router subscription timed out (15 min) without a "
+                                                            + "success payload. Re-subscribing and retrying.");
                                                 TimeUnit.SECONDS.sleep(20);
                                         }
-                                        
+
                                 }
-                                
+
                         } finally {
                                 // disconnect
                                 if (mgmtConnection != null) {
@@ -339,13 +348,29 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
                 logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}", provisionedIotDataEndpoint);
 
+                // Phase 2: connect to the tenant endpoint via the AWS IoT custom
+                // authorizer — no client cert, username = uuid, password =
+                // `<atecc-sig-hex>:<provisioning-token-b64>`. The Router signed
+                // the token; the tenant authorizer verifies it locally.
+                byte[] customAuthPassword = (signature + ":" + provisioningToken)
+                                .getBytes(StandardCharsets.UTF_8);
+                MqttConnectionHelper.MqttConnectionParameters.MqttConnectionParametersBuilder customAuthBuilder =
+                                MqttConnectionHelper.MqttConnectionParameters
+                                                .builder()
+                                                .rootCaPath(rootCaPath)
+                                                .clientId(clientId)
+                                                .customAuthUsername(clientId)
+                                                .customAuthPassword(customAuthPassword)
+                                                .httpProxyOptions(httpProxyOptions)
+                                                .mqttPort(mqttPort);
+
                 // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
 
                                 MqttClientConnection connection = mqttConnectionHelper
-                                                .getMqttConnection(mqttParameterBuilder
+                                                .getMqttConnection(customAuthBuilder
                                                                 .endpoint(provisionedIotDataEndpoint)
                                                                 .clientBootstrap(clientBootstrap).build())) {
 

@@ -523,6 +523,30 @@ public class PkcsProvider {
     }
 
     /**
+     * Tears down and recreates the SunPKCS11 provider so the next operation runs
+     * on a fresh module connection with the previously-cached transient TPM
+     * objects flushed. tpm2-pkcs11 keeps a key loaded after use and only flushes
+     * it on C_Finalize; on a TPM with the spec-minimum ~3 transient object slots
+     * the cached sign key otherwise leaves no room for the provisioning key's
+     * TPM2_CreateLoaded (TPM_RC_OBJECT_MEMORY / 0x902).
+     */
+    public synchronized void reinitialize() {
+        try {
+            // C_Logout, then C_Login again by reloading the keystore. tpm2-pkcs11
+            // flushes the token's loaded transient objects on logout, freeing the
+            // TPM object slots the cached sign key would otherwise hold.
+            if (pkcs11Provider instanceof java.security.AuthProvider) {
+                ((java.security.AuthProvider) pkcs11Provider).logout();
+                logger.atInfo().log("Logged out of PKCS#11 token to flush cached TPM objects.");
+            }
+            loadKeyStore();
+            logger.atInfo().log("Reinitialized PKCS#11 provider.");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to reinitialize PKCS11 provider", e);
+        }
+    }
+
+    /**
      * Releases resources held by this PkcsProvider, including closing the PKCS#11 library and removing the provider.
      */
     public void close() {

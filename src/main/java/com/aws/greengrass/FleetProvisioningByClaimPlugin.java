@@ -211,6 +211,18 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         }
                 }
 
+                // Generate the provisioning key up front, while the TPM/PKCS#11
+                // connection has no other keys loaded. The authorizer signature
+                // below loads the sign key and tpm2-pkcs11 keeps it cached; on a
+                // TPM with only ~3 transient object slots that cached key leaves
+                // no room for this key's TPM2_CreateLoaded, so the CSR-flow keygen
+                // fails with TPM_RC_OBJECT_MEMORY (0x902). Creating it first, on a
+                // clean connection, avoids the contention.
+                KeyPair authKeys = null;
+                if (useTpmProvisioning) {
+                        authKeys = pkcsProviderInstance.generateKeyPair();
+                }
+
                 // Sign the clientId with the private key
                 try {
                         clientId = this.deviceIdentityHelper.getClientId();
@@ -436,10 +448,9 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         if (useTpmProvisioning) {
                                 logger.atInfo().log("Provisioning with CSR flow");
 
-                                // Create keypair 
-                                KeyPair authKeys = pkcsProviderInstance.generateKeyPair();
-
-                                // Create CSR
+                                // authKeys was generated up front (before the sign
+                                // key was loaded) to avoid TPM object-memory
+                                // contention during CreateLoaded. Build the CSR now.
                                 String csr = pkcsProviderInstance.generateCSR(clientId, authKeys);
 
 

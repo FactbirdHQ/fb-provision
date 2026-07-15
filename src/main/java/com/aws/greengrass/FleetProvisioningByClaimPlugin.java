@@ -399,10 +399,19 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}", provisionedIotDataEndpoint);
 
                 // Phase 2: connect to the tenant endpoint via the AWS IoT custom
-                // authorizer — no client cert, username = uuid, password =
-                // `<atecc-sig-hex>:<provisioning-token-b64>`. The Router signed
-                // the token; the tenant authorizer verifies it locally.
-                byte[] customAuthPassword = (signature + ":" + provisioningToken)
+                // authorizer — no client cert, username = uuid. The password
+                // format depends on the token variant:
+                //
+                //   Router mode (`db/1`): `<atecc-sig-hex>:<provisioning-token>`.
+                //     The token is device-bound and carries the device `pub_key`,
+                //     so the tenant authorizer verifies the signature against it.
+                //
+                //   Direct mode (`reg/1`): the bare token. It is issued before the
+                //     device exists, so it carries no `pub_key` — there is nothing
+                //     to verify a signature against, and the tenant authorizer
+                //     rejects a signature prefix outright.
+                byte[] customAuthPassword = (directMode ? provisioningToken
+                                : signature + ":" + provisioningToken)
                                 .getBytes(StandardCharsets.UTF_8);
                 MqttConnectionHelper.MqttConnectionParameters.MqttConnectionParametersBuilder customAuthBuilder =
                                 MqttConnectionHelper.MqttConnectionParameters

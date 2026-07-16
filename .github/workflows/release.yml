@@ -52,10 +52,14 @@ jobs:
           IFS='.' read -r major minor patch <<<"${base}"
           # Treat a missing patch component (e.g. "1.0") as 0.
           patch=${patch:-0}
+          # The -SNAPSHOT base already IS the next intended patch release
+          # (the post-release step bumps patch into -SNAPSHOT). So a patch
+          # release strips -SNAPSHOT as-is; incrementing here would skip a
+          # version. minor/major bump and zero the lower components.
           case "${{ inputs.bumpType }}" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
             minor) minor=$((minor + 1)); patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
+            patch) : ;;
           esac
           new="${major}.${minor}.${patch}"
           next="${major}.${minor}.$((patch + 1))-SNAPSHOT"

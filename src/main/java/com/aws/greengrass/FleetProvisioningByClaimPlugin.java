@@ -211,10 +211,13 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         }
                 }
 
+                // Resolve identity before signing: a failure here means "we don't know
+                // who this device is", which is not a signing problem and must not be
+                // reported as one.
+                clientId = this.deviceIdentityHelper.getClientId();
+
                 // Sign the clientId with the private key
                 try {
-                        clientId = this.deviceIdentityHelper.getClientId();
-
                         if (useTpmProvisioning) {
                                 signature = pkcsProviderInstance.sign(clientId, SIGN_KEY_LABEL);
                         } else {

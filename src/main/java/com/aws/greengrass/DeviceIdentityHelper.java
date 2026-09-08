@@ -6,7 +6,6 @@ import com.aws.greengrass.logging.impl.LogManager;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.math.BigInteger;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.security.GeneralSecurityException;
@@ -54,6 +53,13 @@ public class DeviceIdentityHelper {
 
             byte[] signature = privateSignature.sign();
 
-            return new BigInteger(1, signature).toString(16);
+            // Fixed-width hex (128 chars). BigInteger(1, ...).toString(16) drops
+            // leading zeros, giving ~1/16 odd-length/short signatures that the
+            // cloud rejects on strict hex decode.
+            StringBuilder hex = new StringBuilder(signature.length * 2);
+            for (byte b : signature) {
+                hex.append(String.format("%02x", b & 0xFF));
+            }
+            return hex.toString();
     }
 }

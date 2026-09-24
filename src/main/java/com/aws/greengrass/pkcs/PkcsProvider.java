@@ -87,6 +87,13 @@ public class PkcsProvider {
             initializePkcs11Lib();
             loadKeyStore();
         } catch (Exception e) {
+            // Release whatever was opened before the failure (the CRT lib handle and the
+            // SunPKCS11 registration) so a retry starts clean instead of leaking per attempt.
+            try {
+                close();
+            } catch (RuntimeException closeEx) {
+                e.addSuppressed(closeEx);
+            }
             throw new RuntimeException("Failed to create PKCS11 keystore", e);
         }
     }
@@ -527,11 +534,14 @@ public class PkcsProvider {
 
             // Clear the KeyStore reference
             keyStore = null;
+            pkcs11Lib = null;
 
-            // Optionally, remove the PKCS#11 provider from the Security list
-            Provider provider = Security.getProvider("SunPKCS11");
-            if (provider != null) {
-                Security.removeProvider(provider.getName());
+            // Remove the configured provider (named "SunPKCS11-<name>", not the
+            // base "SunPKCS11") so a subsequent PkcsProvider can register a fresh
+            // one; Security.addProvider is a no-op when the name already exists.
+            if (pkcs11Provider != null) {
+                Security.removeProvider(pkcs11Provider.getName());
+                pkcs11Provider = null;
             }
 
             logger.atInfo().log("PkcsProvider resources have been released.");

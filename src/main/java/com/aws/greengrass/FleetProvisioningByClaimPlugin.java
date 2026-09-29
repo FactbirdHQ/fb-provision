@@ -20,9 +20,6 @@ import com.aws.greengrass.provisioning.exceptions.RetryableProvisioningException
 import com.aws.greengrass.util.FileSystemPermission;
 import com.aws.greengrass.util.Utils;
 import com.aws.greengrass.util.platforms.Platform;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import software.amazon.awssdk.crt.CrtRuntimeException;
 import software.amazon.awssdk.crt.http.HttpProxyOptions;
 import software.amazon.awssdk.crt.io.ClientBootstrap;
 import software.amazon.awssdk.crt.io.ClientTlsContext;
@@ -38,21 +35,23 @@ import software.amazon.awssdk.iot.iotidentity.model.RegisterThingResponse;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
@@ -91,7 +90,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String PROVISIONING_TOKEN_PARAMETER_NAME = "provisioningToken";
         static final String IOT_DATA_ENDPOINT_PARAMETER_NAME = "iotDataEndpoint";
         static final String IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME = "iotCredentialsEndpoint";
-         
+
 
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
@@ -100,33 +99,37 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/auth/prov.cert.pem";
         static final String PRIVATE_KEY_PATH_RELATIVE_TO_ROOT = "/auth/prov.pkey.pem";
 
-        static String SIGN_KEY_LABEL = null;
-        static String CLAIM_KEY_LABEL = null;
         static final String AUTH_KEY_LABEL = "auth";
 
         private final IotIdentityHelperFactory iotIdentityHelperFactory;
         private final ProvisioningRouterFactory provisioningRouterFactory;
         private final MqttConnectionHelper mqttConnectionHelper;
         private final DeviceIdentityHelper deviceIdentityHelper;
+        private final RetryBackoff retryBackoff;
+        /** How long one claim connection waits for the Router to answer before reconnecting. */
+        private final int claimWaitSeconds;
+        static final int DEFAULT_CLAIM_WAIT_SECONDS = 900;
 
         /** Run AWS Fleet provisioning by claim flow.
          *
          */
         public FleetProvisioningByClaimPlugin() {
-                iotIdentityHelperFactory = new IotIdentityHelperFactory();
-                provisioningRouterFactory = new ProvisioningRouterFactory();
-                mqttConnectionHelper = new MqttConnectionHelper();
-                deviceIdentityHelper = new DeviceIdentityHelper();
+                this(new IotIdentityHelperFactory(), new ProvisioningRouterFactory(), new MqttConnectionHelper(),
+                                new DeviceIdentityHelper(), new RetryBackoff(), DEFAULT_CLAIM_WAIT_SECONDS);
         }
 
         FleetProvisioningByClaimPlugin(IotIdentityHelperFactory iotIdentityHelperFactory,
                         ProvisioningRouterFactory provisioningRouterFactory,
                         MqttConnectionHelper mqttConnectionHelper,
-                        DeviceIdentityHelper deviceIdentityHelper) {
+                        DeviceIdentityHelper deviceIdentityHelper,
+                        RetryBackoff retryBackoff,
+                        int claimWaitSeconds) {
                 this.iotIdentityHelperFactory = iotIdentityHelperFactory;
                 this.provisioningRouterFactory = provisioningRouterFactory;
                 this.mqttConnectionHelper = mqttConnectionHelper;
                 this.deviceIdentityHelper = deviceIdentityHelper;
+                this.retryBackoff = retryBackoff;
+                this.claimWaitSeconds = claimWaitSeconds;
         }
 
         @Override
@@ -134,387 +137,511 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 return PLUGIN_NAME;
         }
 
-        @SuppressWarnings("null")
         @Override
         public ProvisionConfiguration updateIdentityConfiguration(ProvisionContext provisionContext)
                         throws RetryableProvisioningException, InterruptedException {
 
-                logger.atInfo().log("Running updated FleetProvisioningByClaimPlugin with DNS retry logic");
+                logger.atInfo().kv("version", pluginVersion())
+                                .log("FleetProvisioningByClaimPlugin starting: unbounded provisioning retry with backoff");
 
                 Map<String, Object> parameterMap = provisionContext.getParameterMap();
                 validateParameters(parameterMap);
+                ProvisioningParameters params = ProvisioningParameters.from(parameterMap);
 
-                // Direct-mode signal: token + endpoints supplied via component config,
-                // no Router round-trip needed.
-                String configuredToken = parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME).toString();
-                boolean directMode = configuredToken != null && !configuredToken.isEmpty();
+                // One attempt = TPM setup, tenant resolution, registration. Any failure tears
+                // everything down and starts over after a backoff, forever. The nucleus only
+                // re-invokes the plugin 3 times seconds apart (and only for
+                // RetryableProvisioningException), so a give-up here means an unprovisioned boot
+                // until the next process restart. The one exception is ProvisioningAbort (see
+                // registerDevice): a retry that can never succeed is surfaced instead.
+                RegisteredDevice registered = retryBackoff.runForever("provisioning", () -> attemptProvisioning(params));
 
-                String certPath = parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME).toString();
-                String keyPath = parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-                String signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
-                Integer mqttPort = null;
-                if (parameterMap.get(MQTT_PORT_PARAMETER_NAME) != null) {
-                        mqttPort = Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
-                }
-                String provisionEndpoint = parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PROVISION_ENDPOINT_PARAMETER_NAME).toString();
-                boolean useTpmProvisioning = false;
-                if (parameterMap.get(USE_TPM_PROV_PARAMETER_NAME) != null) {
-                        Object value = parameterMap.get(USE_TPM_PROV_PARAMETER_NAME);
-                        if (value instanceof Boolean) {
-                                useTpmProvisioning = (Boolean) value;
+                // Past this point the thing is registered in IoT with an active certificate.
+                // A failure here must not re-run registration (it would mint a second one), so
+                // the local config write is deliberately outside the retry loop.
+                return createProvisioningConfiguration(params.parameterMap, registered.iotDataEndpoint,
+                                registered.iotCredentialsEndpoint, registered.registerThingResponse);
+        }
+
+        /** A single end-to-end provisioning attempt. Every resource it opens is closed before it returns. */
+        private RegisteredDevice attemptProvisioning(ProvisioningParameters params) throws Exception {
+                // Stage 1: TPM/PKCS11 setup + clientId signature.
+                DeviceIdentity identity = createIdentity(params);
+                try {
+                        // Stage 2: resolve the tenant. Direct mode was handed token + endpoints by the
+                        // supervisor; Router mode asks fleet-management over the claim connection and
+                        // blocks while unclaimed.
+                        TenantAccess tenant;
+                        if (params.directMode) {
+                                logger.atInfo().log("Direct provisioning mode: token + endpoints supplied via component config");
+                                tenant = new TenantAccess(params.iotDataEndpoint, params.iotCredentialsEndpoint,
+                                                params.provisioningToken);
                         } else {
-                                useTpmProvisioning = Boolean.parseBoolean(value.toString());
+                                tenant = waitForClaim(params, identity);
                         }
+
+                        // Stage 3: connect to the tenant endpoint via custom auth, create the device
+                        // certificate and register the thing.
+                        logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}",
+                                        tenant.iotDataEndpoint);
+                        return registerDevice(params, identity, tenant);
+                } finally {
+                        identity.close();
                 }
-                String pkcs11Library = parameterMap.get(PKCS11_LIBRARY_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PKCS11_LIBRARY_PARAMETER_NAME).toString();
-                String pkcs11Slot = parameterMap.get(PKCS11_SLOT_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PKCS11_SLOT_PARAMETER_NAME).toString();
-                String pkcs11UserPin = parameterMap.get(PKCS11_USER_PIN_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PKCS11_USER_PIN_PARAMETER_NAME).toString();
-                String rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
-                String templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
-                String proxyUrl = parameterMap.get(PROXY_URL_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PROXY_URL_PARAMETER_NAME).toString();
-                String proxyUserName = parameterMap.get(PROXY_USERNAME_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PROXY_USERNAME_PARAMETER_NAME).toString();
-                String proxyPassword = parameterMap.get(PROXY_PASSWORD_PARAMETER_NAME) == null ? null
-                                : parameterMap.get(PROXY_PASSWORD_PARAMETER_NAME).toString();
-                TlsContext proxyTlsContext = new ClientTlsContext(getTlsContextOptions(rootCaPath));
-                HttpProxyOptions httpProxyOptions = MqttConnectionHelper.getHttpProxyOptions(proxyUrl, proxyUserName,
-                                proxyPassword, proxyTlsContext);
-                Map<String, Object> templateParameters = (Map<String, Object>) parameterMap
-                                .get(TEMPLATE_PARAMETERS_PARAMETER_NAME);
+        }
 
-                String signature = "";
-                String clientId = "";
-                PkcsProvider pkcsProviderInstance = null;
+        /**
+         * Stage 2 (Router mode): connect to the provision endpoint with the claim cert and ask
+         * the fleet-management Router for tenant endpoints + a provisioning token. The Router
+         * answers at once for a claimed device and claim_reactor pushes later when an unclaimed
+         * one gets claimed. Each connection waits claimWaitSeconds, then is replaced immediately
+         * with the same identity: a silently dead MQTT session cannot trap us, a claim is picked
+         * up within seconds, and the TPM stage is not redone every cycle. Anything other than the
+         * wait timing out (connect failure, Router rejection such as DECOMMISSIONED) is a real
+         * failure and propagates to the outer backoff.
+         *
+         * <p>The claim key's PKCS11 TLS options live only for this stage: they are closed before
+         * phase 2 so the TPM unloads the claim key. The provision keygen needs those transient
+         * object slots; TPMs only guarantee ~3, so a still-resident claim key makes CreateLoaded
+         * fail with TPM_RC_OBJECT_MEMORY (0x902).</p>
+         */
+        private TenantAccess waitForClaim(ProvisioningParameters params, DeviceIdentity identity) throws Exception {
+                TlsContextPkcs11Options claimTlsOptions = params.useTpmProvisioning
+                                ? identity.pkcsProvider.createTlsContextPkcs11Options(identity.claimKeyLabel)
+                                : null;
+                try {
+                        MqttConnectionParametersBuilder claimBuilder = MqttConnectionHelper.MqttConnectionParameters
+                                        .builder()
+                                        .certificateUri(params.certPath)
+                                        .privKeyUri(params.keyPath)
+                                        .rootCaPath(params.rootCaPath)
+                                        .clientId(identity.clientId)
+                                        .tlsPkcsOptions(claimTlsOptions)
+                                        .httpProxyOptions(params.httpProxyOptions)
+                                        .mqttPort(params.mqttPort);
 
-                // Initialize PKCS11 provider and extract the key labels
-                if (useTpmProvisioning) {
-                        pkcsProviderInstance = new PkcsProvider(pkcs11Library, pkcs11UserPin, pkcs11Slot,
-                                AUTH_KEY_LABEL);
-                        SIGN_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(signKeyPath);
-                        if (SIGN_KEY_LABEL == null) {
-                                throw new DeviceProvisioningRuntimeException("Failed to extract SIGN key label");
-                        }
-                        // Direct mode has no claim cert — the Router round-trip is skipped.
-                        if (certPath != null && !certPath.isEmpty()) {
-                                CLAIM_KEY_LABEL = pkcsProviderInstance.extractObjectLabel(certPath);
-                                if (CLAIM_KEY_LABEL == null) {
-                                        throw new DeviceProvisioningRuntimeException("Failed to extract CLAIM key label");
+                        while (true) {
+                                logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", params.provisionEndpoint);
+                                try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
+                                                HostResolver resolver = new HostResolver(eventLoopGroup);
+                                                ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
+
+                                        MqttClientConnection mgmtConnection = connectToClaimEndpoint(claimBuilder
+                                                        .endpoint(params.provisionEndpoint)
+                                                        .clientBootstrap(clientBootstrap).build());
+                                        try {
+                                                logger.atInfo().log("MQTT connection establishment. Getting claim status");
+                                                return routeToTenant(mgmtConnection, identity);
+                                        } catch (ClaimWaitTimeout e) {
+                                                logger.atInfo().log("No claim after {} s, reconnecting to wait again", claimWaitSeconds);
+                                        } finally {
+                                                disconnectAndClose(mgmtConnection);
+                                        }
                                 }
                         }
+                } finally {
+                        if (claimTlsOptions != null) {
+                                closeQuietly(claimTlsOptions);
+                        }
                 }
+        }
 
-                // Resolve identity before signing: a failure here means "we don't know
-                // who this device is", which is not a signing problem and must not be
-                // reported as one.
-                clientId = this.deviceIdentityHelper.getClientId();
-
-                // Sign the clientId with the private key
+        /**
+         * Stage 1: open the PKCS11 provider (TPM flow), resolve the device clientId
+         * and sign it. On any failure the provider is torn down so the next attempt
+         * starts from a clean SunPKCS11 registration.
+         */
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private DeviceIdentity createIdentity(ProvisioningParameters params) throws Exception {
+                PkcsProvider pkcsProvider = null;
                 try {
-                        if (useTpmProvisioning) {
-                                signature = pkcsProviderInstance.sign(clientId, SIGN_KEY_LABEL);
+                        String signKeyLabel = null;
+                        String claimKeyLabel = null;
+                        if (params.useTpmProvisioning) {
+                                pkcsProvider = new PkcsProvider(params.pkcs11Library, params.pkcs11UserPin,
+                                                params.pkcs11Slot, AUTH_KEY_LABEL);
+                                signKeyLabel = pkcsProvider.extractObjectLabel(params.signKeyPath);
+                                if (signKeyLabel == null) {
+                                        throw new DeviceProvisioningRuntimeException("Failed to extract SIGN key label");
+                                }
+                                // Direct mode has no claim cert: the Router round-trip is skipped.
+                                if (!params.directMode) {
+                                        claimKeyLabel = pkcsProvider.extractObjectLabel(params.certPath);
+                                        if (claimKeyLabel == null) {
+                                                throw new DeviceProvisioningRuntimeException("Failed to extract CLAIM key label");
+                                        }
+                                }
+                        }
+
+                        // Resolve identity before signing: a failure here means "we don't know
+                        // who this device is", which is not a signing problem and must not be
+                        // reported as one.
+                        String clientId = this.deviceIdentityHelper.getClientId();
+                        String signature;
+                        if (params.useTpmProvisioning) {
+                                signature = pkcsProvider.sign(clientId, signKeyLabel);
                         } else {
-                                PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(signKeyPath));
+                                PrivateKey privKey = this.deviceIdentityHelper.readPrivateKey(new File(params.signKeyPath));
                                 signature = this.deviceIdentityHelper.sign(clientId, privKey);
                         }
-                } catch (GeneralSecurityException | IOException ex) {
-                        logger.atError().setCause(ex)
-                                        .log("Exception encountered while signing the clientId");
-                        throw new InterruptedException();
+                        return new DeviceIdentity(clientId, signature, pkcsProvider, claimKeyLabel);
+                } catch (Exception e) {
+                        if (pkcsProvider != null) {
+                                closeQuietly(pkcsProvider);
+                        }
+                        throw e;
                 }
+        }
 
-                String provisionedIotDataEndpoint;
-                String provisionedIotCredentialsEndpoint;
-                String provisioningToken;
-
-                if (directMode) {
-                        // Supervisor-driven flow: the host process already owns a
-                        // mgmt-signed ProvisioningToken and knows the tenant endpoints.
-                        // Skip the Router round-trip and head straight to Phase 2.
-                        logger.atInfo().log("Direct provisioning mode: token + endpoints supplied via component config");
-                        provisioningToken = configuredToken;
-                        provisionedIotDataEndpoint = parameterMap.get(IOT_DATA_ENDPOINT_PARAMETER_NAME).toString();
-                        provisionedIotCredentialsEndpoint = parameterMap.get(IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME).toString();
-                } else {
-                        provisionedIotDataEndpoint = "";
-                        provisionedIotCredentialsEndpoint = "";
-                        provisioningToken = "";
-
-                        // Create the MQTT connection parameters
-                        MqttConnectionParametersBuilder mqttParameterBuilder = null;
-                        // Hoisted so the claim PKCS#11 TLS options can be closed once the
-                        // claim round-trip is done (see the finally below).
-                        TlsContextPkcs11Options options = null;
-                        if (useTpmProvisioning) {
-                                options = pkcsProviderInstance.createTlsContextPkcs11Options(CLAIM_KEY_LABEL);
-                                mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
-                                                .builder()
-                                                .certificateUri(certPath)
-                                                .privKeyUri(keyPath)
-                                                .rootCaPath(rootCaPath)
-                                                .clientId(clientId)
-                                                .tlsPkcsOptions(options)
-                                                .httpProxyOptions(httpProxyOptions)
-                                                .mqttPort(mqttPort);
-                        } else {
-                                mqttParameterBuilder = MqttConnectionHelper.MqttConnectionParameters
-                                                .builder()
-                                                .certificateUri(certPath)
-                                                .privKeyUri(keyPath)
-                                                .rootCaPath(rootCaPath)
-                                                .clientId(clientId)
-                                                .tlsPkcsOptions(null)
-                                                .httpProxyOptions(httpProxyOptions)
-                                                .mqttPort(mqttPort);
-                        }
-
-                        logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", provisionEndpoint);
-
-                        // Obtain cloud endpoint with retry logic for DNS resolution failures
-                        try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
-                                        HostResolver resolver = new HostResolver(eventLoopGroup);
-                                        ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
-
-                        MqttClientConnection mgmtConnection = null;
-                        boolean connectionEstablished = false;
-                        int maxRetries = 10; // Maximum number of retries
-                        int retryCount = 0;
-
-                        while (!connectionEstablished && retryCount < maxRetries) {
-                                logger.atInfo().log("Connection attempt #{} of {}", retryCount + 1, maxRetries);
-                                
-                                try {
-                                        // Attempt to create and connect MQTT connection
-                                        logger.atDebug().log("Creating MQTT connection to endpoint: {}", provisionEndpoint);
-                                        mgmtConnection = mqttConnectionHelper
-                                                        .getMqttConnection(mqttParameterBuilder
-                                                                        .endpoint(provisionEndpoint)
-                                                                        .clientBootstrap(clientBootstrap).build());
-
-                                        logger.atDebug().log("Attempting to connect MQTT connection...");
-                                        CompletableFuture<Boolean> connected = mgmtConnection.connect();
-                                        FutureExceptionHandler.getFutureAfterCompletion(connected,
-                                            "Caught exception while establishing connection to AWS Iot");
-                                        
-                                        connectionEstablished = true;
-                                        logger.atInfo().log("Successfully established MQTT connection to provision endpoint on attempt #{}", retryCount + 1);
-
-                                } catch (Exception e) {
-                                        retryCount++;
-                                        logger.atWarn().setCause(e)
-                                                .kv("attemptNumber", retryCount)
-                                                .kv("maxRetries", maxRetries)
-                                                .log("MQTT connection attempt #{} failed.", retryCount);
-
-                                        if (mgmtConnection != null) {
-                                                try {
-                                                        logger.atDebug().log("Cleaning up failed connection...");
-                                                        mgmtConnection.close();
-                                                } catch (Exception closeEx) {
-                                                        logger.atWarn().setCause(closeEx).log("Exception while closing failed connection");
-                                                }
-                                                mgmtConnection = null;
-                                        }
-                                        
-                                        if (retryCount < maxRetries) {
-                                                logger.atWarn().setCause(e)
-                                                        .kv("retryCount", retryCount)
-                                                        .kv("maxRetries", maxRetries)
-                                                        .log("Failed to establish MQTT connection, retrying in 20 seconds... (attempt {} of {})", retryCount, maxRetries);
-                                                TimeUnit.SECONDS.sleep(20);
-                                        } else {
-                                                logger.atError().setCause(e)
-                                                        .log("Failed to establish MQTT connection after {} retries", maxRetries);
-                                                throw e;
-                                        }
-                                }
-                        }
-
-                        logger.atInfo().log("MQTT connection establishment. Getting claim status");
-
-                        try {
-                                boolean success = false;
-                                while (!success) {
-                                        try {
-                                                ProvisioningRouter provisioningRouter = provisioningRouterFactory.getInstance(mgmtConnection);
-
-                                                // The future completes only on a Router success payload —
-                                                // either the device is already claimed (immediate response)
-                                                // or claim_reactor pushes one when the claim transition fires
-                                                // on the DynamoDB stream. The 900s wall-clock timeout is a
-                                                // safety net for a silently-dropped subscription; on timeout
-                                                // we tear the subscription down and start fresh.
-                                                ProvisionResponse provisionResponse = FutureExceptionHandler
-                                                    .getFutureAfterCompletion(
-                                                        provisioningRouter.route(clientId),
-                                                        900,
-                                                        "Caught exception during routing via fleet-management"
-                                                    );
-
-                                                provisionedIotDataEndpoint = provisionResponse.iotDataEndpoint;
-                                                provisionedIotCredentialsEndpoint = provisionResponse.iotCredentialsEndpoint;
-                                                provisioningToken = provisionResponse.provisioningToken;
-
-                                                // If we get this far, the Router resolved us to a tenant.
-                                                success = true;
-                                        } catch (Exception e) {
-                                                logger.atWarn()
-                                                    .log("Router subscription timed out (15 min) without a "
-                                                            + "success payload. Re-subscribing and retrying.");
-                                                TimeUnit.SECONDS.sleep(20);
-                                        }
-
-                                }
-
-                        } finally {
-                                // The claim cert/key is only needed for this first
-                                // connection. Fully tear it down — disconnect AND close the
-                                // connection plus the PKCS#11 TLS options — so the TPM
-                                // unloads the claim key before Phase 2. The provision keygen
-                                // needs those transient object slots; TPMs only guarantee
-                                // ~3, so a still-resident claim key makes CreateLoaded fail
-                                // with TPM_RC_OBJECT_MEMORY (0x902).
-                                if (mgmtConnection != null) {
-                                        CompletableFuture<Void> disconnected = mgmtConnection.disconnect();
-                                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                                            "Caught exception while disconnecting");
-                                        mgmtConnection.close();
-                                }
-                                if (options != null) {
-                                        options.close();
-                                }
-                        }
-
-                        } catch (CrtRuntimeException | InterruptedException ex) {
-                                logger.atError().setCause(ex)
-                                                .log("Exception encountered while getting claimed cloud endpoint information");
-                                throw ex;
-                        }
+        /** Stage 2: create and connect the claim MQTT connection; closed on failure. */
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private MqttClientConnection connectToClaimEndpoint(MqttConnectionHelper.MqttConnectionParameters parameters)
+                        throws Exception {
+                MqttClientConnection connection = mqttConnectionHelper.getMqttConnection(parameters);
+                try {
+                        CompletableFuture<Boolean> connected = connection.connect();
+                        FutureExceptionHandler.getFutureAfterCompletion(connected,
+                            "Caught exception while establishing connection to AWS Iot");
+                        logger.atInfo().log("Successfully established MQTT connection to provision endpoint");
+                        return connection;
+                } catch (Exception e) {
+                        closeQuietly(connection);
+                        throw e;
                 }
+        }
 
-                logger.atInfo().log("Starting second MQTT connection to provisioned IoT endpoint: {}", provisionedIotDataEndpoint);
+        /**
+         * Subscribe and publish the Router request (failures here are real and back off), then
+         * wait for the answer. The future completes only on a Router success payload: at once
+         * for a claimed device, or when claim_reactor pushes on the claim transition. A
+         * NotClaimed error leaves it open, so a timeout only means "still not claimed". Any
+         * other Router error (DECOMMISSIONED, INTERNAL, UNKNOWN) completes it exceptionally.
+         */
+        private TenantAccess routeToTenant(MqttClientConnection connection, DeviceIdentity identity)
+                        throws InterruptedException, RetryableProvisioningException, ClaimWaitTimeout {
+                ProvisioningRouter provisioningRouter = provisioningRouterFactory.getInstance(connection);
+                Future<ProvisionResponse> response = provisioningRouter.route(identity.clientId);
+                try {
+                        ProvisionResponse resolved = response.get(claimWaitSeconds, TimeUnit.SECONDS);
+                        return new TenantAccess(resolved.iotDataEndpoint, resolved.iotCredentialsEndpoint,
+                                        resolved.provisioningToken);
+                } catch (TimeoutException e) {
+                        throw new ClaimWaitTimeout();
+                } catch (ExecutionException e) {
+                        throw new RetryableProvisioningException(e.getCause());
+                }
+        }
 
-                // Phase 2: connect to the tenant endpoint via the AWS IoT custom
-                // authorizer — no client cert, username = uuid. The password
-                // format depends on the token variant:
-                //
-                //   Router mode (`db/1`): `<atecc-sig-hex>:<provisioning-token>`.
-                //     The token is device-bound and carries the device `pub_key`,
-                //     so the tenant authorizer verifies the signature against it.
-                //
-                //   Direct mode (`reg/1`): the bare token. It is issued before the
-                //     device exists, so it carries no `pub_key` — there is nothing
-                //     to verify a signature against, and the tenant authorizer
-                //     rejects a signature prefix outright.
-                byte[] customAuthPassword = (directMode ? provisioningToken
-                                : signature + ":" + provisioningToken)
+        /**
+         * Stage 3: custom-auth connection to the tenant endpoint, certificate creation,
+         * RegisterThing. No client cert, username = uuid. The password format depends on the
+         * token variant:
+         *
+         * <ul>
+         *   <li>Router mode ({@code db/1}): {@code <atecc-sig-hex>:<provisioning-token>}. The token
+         *       is device-bound and carries the device {@code pub_key}, so the tenant authorizer
+         *       verifies the signature against it. A new token is minted per attempt.</li>
+         *   <li>Direct mode ({@code reg/1}): the bare token. It is issued before the device
+         *       exists, so it carries no {@code pub_key} and the authorizer rejects a signature
+         *       prefix outright. It is also single-use: the authorizer records its {@code jti}
+         *       when it first accepts the CONNECT, and rejects every later CONNECT with the same
+         *       token as a replay. So in direct mode a failure after the connect succeeded can
+         *       never be retried with what we have; it aborts the retry loop instead.</li>
+         * </ul>
+         */
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private RegisteredDevice registerDevice(ProvisioningParameters params, DeviceIdentity identity,
+                        TenantAccess tenant) throws Exception {
+                byte[] customAuthPassword = (params.directMode ? tenant.provisioningToken
+                                : identity.signature + ":" + tenant.provisioningToken)
                                 .getBytes(StandardCharsets.UTF_8);
-                MqttConnectionHelper.MqttConnectionParameters.MqttConnectionParametersBuilder customAuthBuilder =
-                                MqttConnectionHelper.MqttConnectionParameters
-                                                .builder()
-                                                .rootCaPath(rootCaPath)
-                                                .clientId(clientId)
-                                                .customAuthUsername(clientId)
-                                                .customAuthPassword(customAuthPassword)
-                                                .httpProxyOptions(httpProxyOptions)
-                                                .mqttPort(mqttPort);
+                MqttConnectionParametersBuilder customAuthBuilder = MqttConnectionHelper.MqttConnectionParameters
+                                .builder()
+                                .rootCaPath(params.rootCaPath)
+                                .clientId(identity.clientId)
+                                .customAuthUsername(identity.clientId)
+                                .customAuthPassword(customAuthPassword)
+                                .httpProxyOptions(params.httpProxyOptions)
+                                .mqttPort(params.mqttPort);
 
-                // Provision in obtained cloud
                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver);
 
                                 MqttClientConnection connection = mqttConnectionHelper
                                                 .getMqttConnection(customAuthBuilder
-                                                                .endpoint(provisionedIotDataEndpoint)
+                                                                .endpoint(tenant.iotDataEndpoint)
                                                                 .clientBootstrap(clientBootstrap).build())) {
 
-                        // Setup new connection to `provisionedIotDataEndpoint`
+                        // Setup new connection to `iotDataEndpoint`
                         CompletableFuture<Boolean> connected = connection.connect();
                         FutureExceptionHandler.getFutureAfterCompletion(connected,
                             "Caught exception while establishing connection to AWS Iot");
 
-                        IotIdentityHelper iotIdentityHelper = iotIdentityHelperFactory.getInstance(connection);
-
-                        String certificateOwnershipToken;
-
-                        if (useTpmProvisioning) {
-                                logger.atInfo().log("Provisioning with CSR flow");
-
-                                // Flush the sign key (loaded for the authorizer
-                                // signature and cached by tpm2-pkcs11) before creating
-                                // the provision key. On a ~3-transient-slot TPM the
-                                // cached sign key otherwise leaves no room for
-                                // CreateLoaded (TPM_RC_OBJECT_MEMORY / 0x902).
-                                pkcsProviderInstance.reinitialize();
-
-                                KeyPair authKeys = pkcsProviderInstance.generateKeyPair();
-
-                                // Create CSR
-                                String csr = pkcsProviderInstance.generateCSR(clientId, authKeys);
-
-
-                                CreateCertificateFromCsrResponse response;
-                                response = FutureExceptionHandler.getFutureAfterCompletion(
-                                    iotIdentityHelper.createCertificateFromCsr(csr),
-                                    "Caught exception during PublishCreateCertificateFromCsr");
-
-                                // write certificate to the keystore
-                                pkcsProviderInstance.addCertificateToKeystore(
-                                    "auth", authKeys, response.certificatePem);
-
-                                certificateOwnershipToken = response.certificateOwnershipToken;
-
-                        } else {
-                                logger.atInfo().log("Provisioning with certificates from filespaths");
-                                CreateKeysAndCertificateResponse response;
-                                response = FutureExceptionHandler.getFutureAfterCompletion(
-                                    iotIdentityHelper.createKeysAndCertificate(),
-                                    "Caught exception during PublishCreateKeysAndCertificate");
-
-                                writeCertificateAndKeyToPath(response,
-                                    parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString());
-                                certificateOwnershipToken = response.certificateOwnershipToken;
+                        try {
+                                return createCertificateAndRegister(params, identity, tenant, connection);
+                        } catch (InterruptedException e) {
+                                throw e;
+                        } catch (Exception e) {
+                                if (params.directMode) {
+                                        throw new ProvisioningAbort(
+                                                "Direct-mode provisioning token was consumed by the tenant connect; "
+                                                        + "a retry would be rejected as a replay", e);
+                                }
+                                throw e;
                         }
-
-                        HashMap<String, String> parameterHashMap = new HashMap<>();
-                        if (templateParameters != null) {
-                                templateParameters.forEach((k, v) -> parameterHashMap.put(k, v.toString()));
-                        }
-                        // Add uuid & signature
-                        parameterHashMap.put("uuid", clientId);
-                        parameterHashMap.put("signature", signature);
-
-                        Future<RegisterThingResponse> registerFuture = iotIdentityHelper
-                            .registerThing(certificateOwnershipToken, templateName, parameterHashMap);
-                        RegisterThingResponse registerThingResponse = FutureExceptionHandler
-                            .getFutureAfterCompletion(registerFuture,
-                                "Caught exception during registering Iot Thing");
-                        CompletableFuture<Void> disconnected = connection.disconnect();
-                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
-                            "Caught exception while disconnecting");
-
-                        if (pkcsProviderInstance != null) {
-                                pkcsProviderInstance.close();
-                        }
-
-                        return createProvisioningConfiguration(parameterMap, provisionedIotDataEndpoint,
-                            provisionedIotCredentialsEndpoint, registerThingResponse);
-                } catch (CrtRuntimeException | InterruptedException ex) {
-                        logger.atError().setCause(ex)
-                                        .log("Exception encountered while getting device identity information");
-                        throw ex;
                 }
         }
 
-        
+        /** Stage 3 body, on an established tenant connection. */
+        private RegisteredDevice createCertificateAndRegister(ProvisioningParameters params, DeviceIdentity identity,
+                        TenantAccess tenant, MqttClientConnection connection) throws Exception {
+                IotIdentityHelper iotIdentityHelper = iotIdentityHelperFactory.getInstance(connection);
+
+                String certificateOwnershipToken;
+
+                if (params.useTpmProvisioning) {
+                        logger.atInfo().log("Provisioning with CSR flow");
+
+                        // Flush the sign key (loaded for the authorizer signature and cached by
+                        // tpm2-pkcs11) before creating the provision key. On a ~3-transient-slot
+                        // TPM the cached sign key otherwise leaves no room for CreateLoaded
+                        // (TPM_RC_OBJECT_MEMORY / 0x902).
+                        identity.pkcsProvider.reinitialize();
+
+                        // A retried attempt regenerates the key; setKeyEntry below replaces any
+                        // earlier "auth" private key + cert under the same alias. Only the session
+                        // public key can be left behind, at most one per attempt that fails
+                        // between here and RegisterThing.
+                        KeyPair authKeys = identity.pkcsProvider.generateKeyPair();
+
+                        // Create CSR
+                        String csr = identity.pkcsProvider.generateCSR(identity.clientId, authKeys);
+
+                        CreateCertificateFromCsrResponse response;
+                        response = FutureExceptionHandler.getFutureAfterCompletion(
+                            iotIdentityHelper.createCertificateFromCsr(csr),
+                            "Caught exception during PublishCreateCertificateFromCsr");
+
+                        // write certificate to the keystore
+                        identity.pkcsProvider.addCertificateToKeystore(
+                            AUTH_KEY_LABEL, authKeys, response.certificatePem);
+
+                        certificateOwnershipToken = response.certificateOwnershipToken;
+
+                } else {
+                        logger.atInfo().log("Provisioning with certificates from filespaths");
+                        CreateKeysAndCertificateResponse response;
+                        response = FutureExceptionHandler.getFutureAfterCompletion(
+                            iotIdentityHelper.createKeysAndCertificate(),
+                            "Caught exception during PublishCreateKeysAndCertificate");
+
+                        writeCertificateAndKeyToPath(response, params.rootPath);
+                        certificateOwnershipToken = response.certificateOwnershipToken;
+                }
+
+                HashMap<String, String> parameterHashMap = new HashMap<>();
+                if (params.templateParameters != null) {
+                        params.templateParameters.forEach((k, v) -> parameterHashMap.put(k, v.toString()));
+                }
+                // Add uuid & signature
+                parameterHashMap.put("uuid", identity.clientId);
+                parameterHashMap.put("signature", identity.signature);
+
+                Future<RegisterThingResponse> registerFuture = iotIdentityHelper
+                    .registerThing(certificateOwnershipToken, params.templateName, parameterHashMap);
+                RegisterThingResponse registerThingResponse = FutureExceptionHandler
+                    .getFutureAfterCompletion(registerFuture,
+                        "Caught exception during registering Iot Thing");
+
+                // The thing is registered. From here on nothing may fail the attempt, or the
+                // retry would register again with a second active certificate.
+                try {
+                        CompletableFuture<Void> disconnected = connection.disconnect();
+                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
+                            "Caught exception while disconnecting");
+                } catch (InterruptedException e) {
+                        throw e;
+                } catch (Exception e) {
+                        logger.atWarn().setCause(e).log("Disconnect after RegisterThing failed; ignoring");
+                }
+
+                return new RegisteredDevice(tenant, registerThingResponse);
+        }
+
+        /** Thrown when a claim connection has waited its full window without an answer. */
+        private static final class ClaimWaitTimeout extends Exception {
+                private static final long serialVersionUID = 1L;
+        }
+
+        /** What stage 2 resolves: where the tenant is and what proves we may join it. */
+        private static final class TenantAccess {
+                final String iotDataEndpoint;
+                final String iotCredentialsEndpoint;
+                final String provisioningToken;
+
+                TenantAccess(String iotDataEndpoint, String iotCredentialsEndpoint, String provisioningToken) {
+                        this.iotDataEndpoint = iotDataEndpoint;
+                        this.iotCredentialsEndpoint = iotCredentialsEndpoint;
+                        this.provisioningToken = provisioningToken;
+                }
+        }
+
+        /** Outcome of a successful attempt: what the nucleus config is built from. */
+        private static final class RegisteredDevice {
+                final String iotDataEndpoint;
+                final String iotCredentialsEndpoint;
+                final RegisterThingResponse registerThingResponse;
+
+                RegisteredDevice(TenantAccess tenant, RegisterThingResponse registerThingResponse) {
+                        this.iotDataEndpoint = tenant.iotDataEndpoint;
+                        this.iotCredentialsEndpoint = tenant.iotCredentialsEndpoint;
+                        this.registerThingResponse = registerThingResponse;
+                }
+        }
+
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private static void disconnectAndClose(MqttClientConnection connection) throws InterruptedException {
+                try {
+                        CompletableFuture<Void> disconnected = connection.disconnect();
+                        FutureExceptionHandler.getFutureAfterCompletion(disconnected,
+                            "Caught exception while disconnecting");
+                } catch (InterruptedException e) {
+                        throw e;
+                } catch (Exception e) {
+                        logger.atWarn().setCause(e).log("Exception while disconnecting claim connection");
+                } finally {
+                        closeQuietly(connection);
+                }
+        }
+
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private static void closeQuietly(MqttClientConnection connection) {
+                try {
+                        connection.close();
+                } catch (Exception e) {
+                        logger.atWarn().setCause(e).log("Exception while closing connection");
+                }
+        }
+
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private static void closeQuietly(TlsContextPkcs11Options options) {
+                try {
+                        options.close();
+                } catch (Exception e) {
+                        logger.atWarn().setCause(e).log("Exception while closing PKCS11 TLS options");
+                }
+        }
+
+        @SuppressWarnings("PMD.AvoidCatchingGenericException")
+        private static void closeQuietly(PkcsProvider pkcsProvider) {
+                try {
+                        pkcsProvider.close();
+                } catch (Exception e) {
+                        logger.atWarn().setCause(e).log("Exception while closing PKCS11 provider");
+                }
+        }
+
+        /** Parsed plugin parameters; built once, outside every retry loop. */
+        private static final class ProvisioningParameters {
+                final Map<String, Object> parameterMap;
+                final boolean directMode;
+                final String provisioningToken;
+                final String iotDataEndpoint;
+                final String iotCredentialsEndpoint;
+                final String certPath;
+                final String keyPath;
+                final String signKeyPath;
+                final Integer mqttPort;
+                final String provisionEndpoint;
+                final boolean useTpmProvisioning;
+                final String pkcs11Library;
+                final String pkcs11Slot;
+                final String pkcs11UserPin;
+                final String rootCaPath;
+                final String rootPath;
+                final String templateName;
+                final HttpProxyOptions httpProxyOptions;
+                final Map<String, Object> templateParameters;
+
+                @SuppressWarnings("unchecked")
+                private ProvisioningParameters(Map<String, Object> parameterMap) {
+                        this.parameterMap = parameterMap;
+                        // Direct-mode signal: token + endpoints supplied via component config,
+                        // no Router round-trip needed.
+                        provisioningToken = optional(parameterMap, PROVISIONING_TOKEN_PARAMETER_NAME);
+                        directMode = provisioningToken != null && !provisioningToken.isEmpty();
+                        iotDataEndpoint = optional(parameterMap, IOT_DATA_ENDPOINT_PARAMETER_NAME);
+                        iotCredentialsEndpoint = optional(parameterMap, IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME);
+                        certPath = optional(parameterMap, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
+                        keyPath = optional(parameterMap, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
+                        signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
+                        mqttPort = parameterMap.get(MQTT_PORT_PARAMETER_NAME) == null ? null
+                                        : Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
+                        provisionEndpoint = optional(parameterMap, PROVISION_ENDPOINT_PARAMETER_NAME);
+                        useTpmProvisioning = isUseTpmProvisioning(parameterMap);
+                        pkcs11Library = optional(parameterMap, PKCS11_LIBRARY_PARAMETER_NAME);
+                        pkcs11Slot = optional(parameterMap, PKCS11_SLOT_PARAMETER_NAME);
+                        pkcs11UserPin = optional(parameterMap, PKCS11_USER_PIN_PARAMETER_NAME);
+                        rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
+                        rootPath = parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString();
+                        templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
+                        TlsContext proxyTlsContext = new ClientTlsContext(getTlsContextOptions(rootCaPath));
+                        httpProxyOptions = MqttConnectionHelper.getHttpProxyOptions(
+                                        optional(parameterMap, PROXY_URL_PARAMETER_NAME),
+                                        optional(parameterMap, PROXY_USERNAME_PARAMETER_NAME),
+                                        optional(parameterMap, PROXY_PASSWORD_PARAMETER_NAME),
+                                        proxyTlsContext);
+                        templateParameters = (Map<String, Object>) parameterMap.get(TEMPLATE_PARAMETERS_PARAMETER_NAME);
+                }
+
+                static ProvisioningParameters from(Map<String, Object> parameterMap) {
+                        return new ProvisioningParameters(parameterMap);
+                }
+
+                private static String optional(Map<String, Object> parameterMap, String key) {
+                        return parameterMap.get(key) == null ? null : parameterMap.get(key).toString();
+                }
+        }
+
+        /**
+         * Result of the identity stage: who the device is, proven by a signature, plus the
+         * PKCS11 provider that signed it and will hold the provisioned key. Lives exactly as
+         * long as one attempt.
+         */
+        private static final class DeviceIdentity {
+                final String clientId;
+                final String signature;
+                final PkcsProvider pkcsProvider;
+                final String claimKeyLabel;
+
+                DeviceIdentity(String clientId, String signature, PkcsProvider pkcsProvider, String claimKeyLabel) {
+                        this.clientId = clientId;
+                        this.signature = signature;
+                        this.pkcsProvider = pkcsProvider;
+                        this.claimKeyLabel = claimKeyLabel;
+                }
+
+                void close() {
+                        if (pkcsProvider != null) {
+                                closeQuietly(pkcsProvider);
+                        }
+                }
+        }
+
+        /** Plugin version from plugin-version.properties, filled in by Maven resource filtering. */
+        private static String pluginVersion() {
+                Properties props = new Properties();
+                try (InputStream in = FleetProvisioningByClaimPlugin.class.getResourceAsStream("/plugin-version.properties")) {
+                        if (in != null) {
+                                props.load(in);
+                        }
+                } catch (IOException e) {
+                        logger.atWarn().setCause(e).log("Could not read plugin-version.properties");
+                }
+                return props.getProperty("version", "unknown");
+        }
+
         private static TlsContextOptions getTlsContextOptions(String rootCaPath) {
                 return Utils.isNotEmpty(rootCaPath)
                         ? TlsContextOptions.createDefaultClient().withCertificateAuthorityFromPath(null, rootCaPath)
@@ -574,7 +701,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 if (parameterValue != null && !Utils.isEmpty(parameterValue.toString())) {
                         nucleusConfiguration.setIotRoleAlias(parameterValue.toString());
                 }
-                
+
                 // System configuration
                 String confPrivateKeyPath = null;
                 String confCertPath = null;
@@ -602,7 +729,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 .certificateFilePath(confCertPath)
                                 .rootCAPath(parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString())
                                 .build();
-                
+
 
                 return ProvisionConfiguration.builder()
                                 .systemConfiguration(systemConfiguration)
@@ -628,7 +755,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
-        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint, 
+        private void writeDeviceConfigurationToPath(RegisterThingResponse response, String iotDataEndpoint,
                                                         String iotCredEndpoint, String rootPath) {
             try {
                 // Write environment file only
@@ -640,7 +767,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                              .append(entry.getValue())
                              .append("\n");
                 }
-      
+
                 Path envPath = Paths.get(rootPath, "/config/environment");
                 if (Files.notExists(envPath)) {
                     Files.createDirectories(envPath.getParent());
@@ -649,15 +776,15 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 Files.write(envPath, envContent.toString().getBytes(StandardCharsets.UTF_8));
                 Platform.getInstance().setPermissions(
                     FileSystemPermission.builder().ownerRead(true).groupRead(true).build(), envPath);
-      
+
                 logger.atInfo().log("Wrote device environment configuration to {}", envPath);
-      
+
             } catch (IOException e) {
                 logger.atError().log("Caught exception while writing device configuration to file");
                 throw new DeviceProvisioningRuntimeException("Failed to write device configuration", e);
             }
         }
-      
+
         private String camelCaseToUpperSnakeCase(String camelCase) {
             return camelCase.replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase();
         }
@@ -687,38 +814,4 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 }
         }
 
-        private static void copyFile(String srcPath, String dstPath) {
-                // Convert files from String to Path
-                Path src = Paths.get(srcPath);
-                Path dst = Paths.get(dstPath);
-                try {
-                        createFile(dst);
-                        Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
-                } catch (IOException e) {
-                logger.atError().kv("src", src).kv("dst", dst)
-                    .log("Caught exception while copying file");
-                throw new DeviceProvisioningRuntimeException(
-                        String.format("Failed to copy %s to %s", src, dst), e);
-                }
-        }
-
-        private static void createFile(Path file) throws IOException {
-
-                Path parent = file.getParent();
-                if (parent != null) {
-                        Files.createDirectories(parent);
-                }
-                if (Files.notExists(file)) {
-                        Files.createFile(file);
-                }
-        }
-
-        private void exitprogram() throws InterruptedException {
-                // log end of execution and throw a interrupted exception to exit the program
-                boolean logendofexecution = true;
-                if (logendofexecution) {
-                        throw new InterruptedException("succesfully failed. exiting the program\n\n\n\n\n");
-                }
-        }
 }
-

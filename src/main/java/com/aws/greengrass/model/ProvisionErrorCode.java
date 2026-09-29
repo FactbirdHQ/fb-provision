@@ -17,11 +17,11 @@ import com.google.gson.annotations.SerializedName;
  *       Keep the {@code provision/{uuid}/response} subscription open
  *       and wait for {@code claim_reactor} to push a success payload
  *       when the DynamoDB claim transition fires.</li>
- *   <li>{@link #DECOMMISSIONED} — terminal. Tear down and reconnect /
- *       retry from scratch; operator intervention is typically
- *       required.</li>
- *   <li>{@link #INTERNAL} — catch-all server failure; retry from
- *       scratch.</li>
+ *   <li>{@link #DECOMMISSIONED} — terminal. Fails the attempt; the
+ *       plugin's outer retry backs off and starts over. Operator
+ *       intervention is typically required.</li>
+ *   <li>{@link #INTERNAL} — catch-all server failure; fails the
+ *       attempt, retried with backoff.</li>
  *   <li>{@link #UNKNOWN} — forward-compat catch-all for codes the
  *       client doesn't know about. Treat as {@link #INTERNAL}.</li>
  * </ul>

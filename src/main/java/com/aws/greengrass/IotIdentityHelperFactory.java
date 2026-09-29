@@ -9,18 +9,19 @@ package com.aws.greengrass;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 
 public class IotIdentityHelperFactory {
-    IotIdentityHelper iotIdentityHelper;
 
     /**
-     * Provides a singleton instance of {@link IotIdentityHelper}.
-     * 
+     * Provides a {@link IotIdentityHelper} bound to the given connection.
+     *
+     * <p>Not cached: provisioning is retried with a fresh MQTT connection per
+     * attempt, and a IotIdentityHelper holds the connection it was created with. Caching
+     * the first instance made every retry operate on a closed connection
+     * ("Invalid connection during subscribe").</p>
+     *
      * @param connection Mqtt client connection to AWS IoT
      * @return {@link IotIdentityHelper}
      */
     public IotIdentityHelper getInstance(MqttClientConnection connection) {
-        if (iotIdentityHelper == null) {
-            iotIdentityHelper = new IotIdentityHelper(connection);
-        }
-        return iotIdentityHelper;
+        return new IotIdentityHelper(connection);
     }
 }

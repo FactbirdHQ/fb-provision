@@ -91,6 +91,13 @@ public class PkcsProvider {
             initializePkcs11Lib();
             loadKeyStore();
         } catch (Exception e) {
+            // Release whatever was opened before the failure (the CRT lib handle and the
+            // SunPKCS11 registration) so a retry starts clean instead of leaking per attempt.
+            try {
+                close();
+            } catch (RuntimeException closeEx) {
+                e.addSuppressed(closeEx);
+            }
             throw new RuntimeException("Failed to create PKCS11 keystore", e);
         }
     }
@@ -547,20 +554,45 @@ public class PkcsProvider {
     }
 
     /**
-     * Releases resources held by this PkcsProvider, including closing the PKCS#11 library and removing the provider.
+     * Releases resources held by this PkcsProvider: logs out of the token, closes the
+     * PKCS#11 library and removes the provider.
+     *
+     * <p>The logout matters when provisioning is retried in the same process. The
+     * tpm2-pkcs11 module stays initialized for the JVM's lifetime (nothing calls
+     * C_Finalize), and it keeps every object this provider loaded (sign key, the
+     * generated provisioning key pair) resident in the TPM until logout. Without it, a
+     * retried attempt's very first sign() fails with TPM_RC_OBJECT_MEMORY (0x902) and the
+     * attempt after that with an inconsistent ESYS handle, so the retry loop could never
+     * recover. Seen on device (scarthgap, 2.8.0) on every attempt after one that reached
+     * key generation.</p>
      */
+    @SuppressWarnings("PMD.AvoidCatchingGenericException")
     public void close() {
         try {
+            // Flush this provider's loaded TPM objects. Best effort: a provider that
+            // never logged in (constructor failure) has nothing to flush.
+            if (pkcs11Provider instanceof java.security.AuthProvider) {
+                try {
+                    ((java.security.AuthProvider) pkcs11Provider).logout();
+                    logger.atInfo().log("Logged out of PKCS#11 token to flush cached TPM objects.");
+                } catch (Exception e) {
+                    logger.atDebug().setCause(e).log("PKCS#11 logout on close skipped");
+                }
+            }
+
             // Close the PKCS#11 library if initialized
             closePkcs11Lib();
 
             // Clear the KeyStore reference
             keyStore = null;
+            pkcs11Lib = null;
 
-            // Optionally, remove the PKCS#11 provider from the Security list
-            Provider provider = Security.getProvider("SunPKCS11");
-            if (provider != null) {
-                Security.removeProvider(provider.getName());
+            // Remove the configured provider (named "SunPKCS11-<name>", not the
+            // base "SunPKCS11") so a subsequent PkcsProvider can register a fresh
+            // one; Security.addProvider is a no-op when the name already exists.
+            if (pkcs11Provider != null) {
+                Security.removeProvider(pkcs11Provider.getName());
+                pkcs11Provider = null;
             }
 
             logger.atInfo().log("PkcsProvider resources have been released.");

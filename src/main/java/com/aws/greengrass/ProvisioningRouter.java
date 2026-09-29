@@ -107,10 +107,11 @@ public class ProvisioningRouter {
                     } else {
                         // Decommissioned / Internal / Unknown won't
                         // resolve by waiting on the same subscription.
-                        // Surface so the outer loop tears it down and
-                        // tries again from scratch.
+                        // Fail the attempt; the plugin's outer retry
+                        // backs off (20 s doubling to 300 s) and starts
+                        // over from scratch.
                         logger.atWarn().log(
-                                "Router rejected provisioning ({}): {}. Reconnecting and retrying.",
+                                "Router rejected provisioning ({}): {}. Failing this attempt; retry backs off.",
                                 code, msg);
                         future.completeExceptionally(new RetryableProvisioningException(
                                 "Router rejected provisioning (" + code + "): " + msg));

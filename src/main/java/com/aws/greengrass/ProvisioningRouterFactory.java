@@ -8,15 +8,16 @@ package com.aws.greengrass;
 import software.amazon.awssdk.crt.mqtt.MqttClientConnection;
 
 public class ProvisioningRouterFactory {
-    private ProvisioningRouter provisioningRouter;
 
     /**
-     * Provides a singleton instance of {@link ProvisioningRouter}.
+     * Provides a {@link ProvisioningRouter} bound to the given connection.
+     *
+     * <p>Not cached: provisioning is retried with a fresh MQTT connection per
+     * attempt, and a ProvisioningRouter holds the connection it was created with.
+     * Caching the first instance made every retry operate on a closed connection
+     * ("Invalid connection during subscribe").</p>
      */
     public ProvisioningRouter getInstance(MqttClientConnection connection) {
-        if (provisioningRouter == null) {
-            provisioningRouter = new ProvisioningRouter(connection);
-        }
-        return provisioningRouter;
+        return new ProvisioningRouter(connection);
     }
 }

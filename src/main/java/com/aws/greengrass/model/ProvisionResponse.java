@@ -13,4 +13,10 @@ public class ProvisionResponse {
     public String iotDataEndpoint;
     public String iotCredentialsEndpoint;
     public String provisioningToken;
+    /**
+     * Tenant fleet-provisioning template to call {@code RegisterThing} with.
+     * Absent ({@code null}) from a Router that predates it; the plugin then
+     * falls back to its {@code provisioningTemplate} parameter.
+     */
+    public String provisioningTemplate;
 }

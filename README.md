@@ -19,11 +19,12 @@ verified locally by a custom authorizer in the tenant account.
 
 ## Flow
 
-1. **Routing.** Connect mTLS (claim cert) to the claim broker
-   (`provisionEndpoint`). Publish `provision/{uuid}/request` with
+1. **Routing.** Connect mTLS (claim cert) to the fleet-management
+   Router (`routerEndpoint`). Publish `provision/{uuid}/request` with
    `{uuid, signature}`. Subscribe to `provision/{uuid}/response`. The
    Router publishes a success payload (`iotDataEndpoint`,
-   `iotCredentialsEndpoint`, `provisioningToken`) or an error.
+   `iotCredentialsEndpoint`, `provisioningToken`, and for EDGE-class
+   devices `provisioningTemplate`) or an error.
    - On error (e.g. "device not claimed"), the subscription stays open.
      A DynamoDB-stream-driven `claim_reactor` pushes the success
      payload when the claim transition fires, so the device proceeds
@@ -43,8 +44,7 @@ verified locally by a custom authorizer in the tenant account.
 ### Required
 | Name | Description |
 | ---- | ----------- |
-| `provisionEndpoint` | Claim broker endpoint (`provision.factbird.com`). |
-| `provisioningTemplate` | Name of the AWS IoT provisioning template registered in the tenant account. |
+| `routerEndpoint` | Fleet-management Router endpoint (`provision.factbird.com`). Router mode only. |
 | `claimCertificatePath` | Path / PKCS11 URI of the claim certificate on the device. |
 | `claimCertificatePrivateKeyPath` | Path / PKCS11 URI of the claim private key. |
 | `signPrivateKeyPath` | Path / PKCS11 URI of the identity private key. Its public key is registered on the device record at factory time; the Router verifies the UUID signature against it. |
@@ -55,12 +55,25 @@ verified locally by a custom authorizer in the tenant account.
 ### Optional
 | Name | Description |
 | ---- | ----------- |
+| `provisioningTemplate` | Name of the AWS IoT provisioning template registered in the tenant account. Required in direct mode. In Router mode the Router response carries the template and this is only the fallback for a Router that sends none. |
 | `templateParameters` | `Map<String, String>` of parameters forwarded to the provisioning template. The plugin always adds `uuid` and `signature`. |
 | `awsRegion` | AWS region for the tenant account. |
 | `iotRoleAlias` | Role alias used by Greengrass TES. |
 | `useTpmProvisioning` | When `true`, generate the production keypair inside a PKCS11 HSM and submit a CSR. When `false`, use AWS IoT `createKeysAndCertificate`. |
 | `pkcs11Library` / `pkcs11Slot` / `pkcs11UserPin` | PKCS11 library, slot, and PIN when `useTpmProvisioning=true`. |
 | `proxyUrl` / `proxyUsername` / `proxyPassword` | Optional HTTP(S) proxy. |
+
+### Configuration written for 1.x
+
+A 1.x plugin spoke the legacy mgmt-account protocol and took its claim
+broker from `provisionEndpoint`. 2.x does not read that key. A device
+whose config.yaml still has `provisionEndpoint` and no `routerEndpoint`
+(an EDGE installed by a kirkstone image and upgraded in place) fails
+validation with a message naming the gap instead of retrying against the
+mgmt broker forever; the image's first-boot migration adds
+`routerEndpoint` (factbird-edge-image#203). Both keys may coexist: each
+plugin version reads only its own, which is what keeps a rollback to the
+1.x image provisioning.
 
 ## Build
 

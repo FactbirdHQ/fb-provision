@@ -46,6 +46,7 @@ import static com.aws.greengrass.FleetProvisioningByClaimPlugin.CLAIM_CERTIFICAT
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.IOT_DATA_ENDPOINT_PARAMETER_NAME;
+import static com.aws.greengrass.FleetProvisioningByClaimPlugin.LEGACY_ROUTER_CONFIG_ERROR_FORMAT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PRIVATE_KEY_PATH_RELATIVE_TO_ROOT;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISION_ENDPOINT_PARAMETER_NAME;
@@ -53,6 +54,7 @@ import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISIONING_TEM
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROVISIONING_TOKEN_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.PROXY_URL_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.ROOT_CA_PATH_PARAMETER_NAME;
+import static com.aws.greengrass.FleetProvisioningByClaimPlugin.ROUTER_ENDPOINT_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.ROOT_PATH_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME;
 import static com.aws.greengrass.FleetProvisioningByClaimPlugin.TEMPLATE_PARAMETERS_PARAMETER_NAME;
@@ -89,7 +91,10 @@ public class FleetProvisioningByClaimPluginTest {
     private static final String MOCK_ROLE_ALIAS = "MOCK_ROLE_ALIAS";
     private static final String MOCK_CLIENT_ID = "MOCK_CLIENT_ID";
     private static final String MOCK_SIGNATURE = "MOCK_SIGNATURE";
-    private static final String MOCK_PROVISION_ENDPOINT = "MOCK_PROVISION_ENDPOINT";
+    private static final String MOCK_ROUTER_ENDPOINT = "MOCK_ROUTER_ENDPOINT";
+    private static final String MOCK_LEGACY_PROVISION_ENDPOINT = "a15vr08p8r1x78-ats.iot.eu-west-1.amazonaws.com";
+    /** What a config.yaml predating the Router carries, or what the plugin falls back to. */
+    private static final String MOCK_CONFIG_TEMPLATE_NAME = "MOCK_CONFIG_TEMPLATE_NAME";
     private static final String MOCK_PROVISIONING_TOKEN = "MOCK_PROVISIONING_TOKEN";
     /** Self-signed EC test CA (CN=fb-provision-test-ca, valid 100 years). Only needs to parse. */
     private static final String TEST_CA_PEM = "-----BEGIN CERTIFICATE-----\n"
@@ -201,8 +206,6 @@ public class FleetProvisioningByClaimPluginTest {
                 () -> fleetProvisioningByClaimPlugin.updateIdentityConfiguration(new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap)));
         String errorMessage = e.getMessage();
         assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
-                PROVISIONING_TEMPLATE_PARAMETER_NAME)));
-        assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
                 CLAIM_CERTIFICATE_PATH_PARAMETER_NAME)));
         assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
                 CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME)));
@@ -213,9 +216,14 @@ public class FleetProvisioningByClaimPluginTest {
         assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
                 ROOT_PATH_PARAMETER_NAME)));
         assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
-                PROVISION_ENDPOINT_PARAMETER_NAME)));
+                ROUTER_ENDPOINT_PARAMETER_NAME)));
 
         // verify optional parameters
+        // Router mode takes the template from the Router response.
+        assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                PROVISIONING_TEMPLATE_PARAMETER_NAME)));
+        // The 1.x key is not required, and absent it is not a legacy configuration either.
+        assertFalse(errorMessage.contains(PROVISION_ENDPOINT_PARAMETER_NAME));
         assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
                 TEMPLATE_PARAMETERS_PARAMETER_NAME)));
         assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
@@ -243,7 +251,116 @@ public class FleetProvisioningByClaimPluginTest {
                 IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME)));
         // Router-mode params should not be reported as missing when in direct mode.
         assertFalse(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
-                PROVISION_ENDPOINT_PARAMETER_NAME)));
+                ROUTER_ENDPOINT_PARAMETER_NAME)));
+    }
+
+    @Test
+    public void GIVEN_direct_mode_missing_template_WHEN_validating_THEN_template_reported() {
+        Map<String, Object> parameterMap = createDirectModeParameterMap();
+        parameterMap.remove(PROVISIONING_TEMPLATE_PARAMETER_NAME);
+        Exception e = assertThrows(RuntimeException.class,
+                () -> fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap)));
+        // No Router to supply it in direct mode.
+        assertTrue(e.getMessage().contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                PROVISIONING_TEMPLATE_PARAMETER_NAME)));
+    }
+
+    /**
+     * A config.yaml the kirkstone installer wrote carries the 1.x `provisionEndpoint`
+     * (the mgmt ATS endpoint) and no `routerEndpoint`. Before, the plugin connected
+     * there and retried forever on the broker closing the session; now it names the
+     * migration gap and stops.
+     */
+    @Test
+    public void GIVEN_legacy_mgmt_config_WHEN_validating_THEN_migration_gap_named() {
+        Map<String, Object> parameterMap = createRequiredParameterMap();
+        parameterMap.remove(ROUTER_ENDPOINT_PARAMETER_NAME);
+        parameterMap.put(PROVISION_ENDPOINT_PARAMETER_NAME, MOCK_LEGACY_PROVISION_ENDPOINT);
+        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, "edgeProvisioningTemplate");
+        Exception e = assertThrows(RuntimeException.class,
+                () -> fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap)));
+        String errorMessage = e.getMessage();
+        assertTrue(errorMessage.contains(String.format(MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT,
+                ROUTER_ENDPOINT_PARAMETER_NAME)));
+        assertTrue(errorMessage.contains(String.format(LEGACY_ROUTER_CONFIG_ERROR_FORMAT,
+                PROVISION_ENDPOINT_PARAMETER_NAME, ROUTER_ENDPOINT_PARAMETER_NAME, ROUTER_ENDPOINT_PARAMETER_NAME)));
+        // Nothing was connected: the mgmt endpoint is never tried.
+        verify(mqttConnectionHelper, never()).getMqttConnection(any());
+    }
+
+    /**
+     * A Router that predates the template field: the configured template is the
+     * fallback, so a device that still has one keeps provisioning.
+     */
+    @Test
+    public void GIVEN_router_response_without_template_WHEN_plugin_called_THEN_configured_template_used() throws Exception {
+        Map<String, Object> parameterMap = createRequiredParameterMap();
+        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, MOCK_CONFIG_TEMPLATE_NAME);
+        ProvisionResponse withoutTemplate = provisionResponse();
+        withoutTemplate.provisioningTemplate = null;
+        when(mockProvisioningRouter.route(anyString()))
+                .thenReturn(CompletableFuture.completedFuture(withoutTemplate));
+        when(mockIotIdentityHelper.createKeysAndCertificate()).thenReturn(createMockCreateKeysAndCertificateResponse());
+        when(mockIotIdentityHelper.registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN), eq(MOCK_CONFIG_TEMPLATE_NAME),
+                any())).thenReturn(createMockRegisterThingResponse());
+
+        ProvisionConfiguration provisionConfiguration =
+                fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap));
+
+        assertEquals(MOCK_THING_NAME, provisionConfiguration.getSystemConfiguration().getThingName());
+        verify(mockIotIdentityHelper).registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN),
+                eq(MOCK_CONFIG_TEMPLATE_NAME), any());
+        assertTrue(sleeps.isEmpty(), "expected no backoff sleep, got " + sleeps);
+    }
+
+    /**
+     * The Router's template wins over a configured one: an upgraded device still
+     * carries the legacy template name in its config.yaml, and that template's hook
+     * rejects custom-auth sessions.
+     */
+    @Test
+    public void GIVEN_router_response_with_template_WHEN_plugin_called_THEN_response_template_wins() throws Exception {
+        Map<String, Object> parameterMap = createRequiredParameterMap();
+        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, "edgeProvisioningTemplate");
+        when(mockIotIdentityHelper.createKeysAndCertificate()).thenReturn(createMockCreateKeysAndCertificateResponse());
+        when(mockIotIdentityHelper.registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN), eq(MOCK_PROV_TEMPLATE_NAME),
+                any())).thenReturn(createMockRegisterThingResponse());
+
+        fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap));
+
+        verify(mockIotIdentityHelper).registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN),
+                eq(MOCK_PROV_TEMPLATE_NAME), any());
+        verify(mockIotIdentityHelper, never()).registerThing(any(), eq("edgeProvisioningTemplate"), any());
+    }
+
+    /**
+     * No template from either source is an attempt failure, not an abort: the
+     * Router is asked again after the backoff and may carry it the next time.
+     */
+    @Test
+    public void GIVEN_no_template_anywhere_WHEN_plugin_called_THEN_attempt_retried(ExtensionContext context) throws Exception {
+        ignoreExceptionUltimateCauseOfType(context, RetryableProvisioningException.class);
+        Map<String, Object> parameterMap = createRequiredParameterMap();
+        ProvisionResponse withoutTemplate = provisionResponse();
+        withoutTemplate.provisioningTemplate = null;
+        when(mockProvisioningRouter.route(anyString()))
+                .thenReturn(CompletableFuture.completedFuture(withoutTemplate))
+                .thenReturn(CompletableFuture.completedFuture(provisionResponse()));
+        when(mockIotIdentityHelper.createKeysAndCertificate()).thenReturn(createMockCreateKeysAndCertificateResponse());
+        when(mockIotIdentityHelper.registerThing(eq(MOCK_CERTIFICATE_OWNERSHIP_TOKEN), eq(MOCK_PROV_TEMPLATE_NAME),
+                any())).thenReturn(createMockRegisterThingResponse());
+
+        ProvisionConfiguration provisionConfiguration =
+                fleetProvisioningByClaimPlugin.updateIdentityConfiguration(
+                        new ProvisionContext(DEFAULT_PROVISIONING_POLICY, parameterMap));
+
+        assertEquals(MOCK_THING_NAME, provisionConfiguration.getSystemConfiguration().getThingName());
+        assertEquals(Arrays.asList(20L), sleeps);
+        verify(mockIotIdentityHelper, times(1)).registerThing(any(), any(), any());
     }
 
     @Test
@@ -574,6 +691,7 @@ public class FleetProvisioningByClaimPluginTest {
         provisionResponse.iotDataEndpoint = MOCK_IOT_DATA_ENDPOINT;
         provisionResponse.iotCredentialsEndpoint = MOCK_IOT_CREDENTIAL_ENDPOINT;
         provisionResponse.provisioningToken = MOCK_PROVISIONING_TOKEN;
+        provisionResponse.provisioningTemplate = MOCK_PROV_TEMPLATE_NAME;
         return provisionResponse;
     }
 
@@ -598,15 +716,15 @@ public class FleetProvisioningByClaimPluginTest {
         return mockFuture;
     }
 
+    /** Router mode: no `provisioningTemplate`, the Router response carries it. */
     private Map<String, Object> createRequiredParameterMap() {
         Map<String, Object> parameterMap = new HashMap<>();
-        parameterMap.put(PROVISIONING_TEMPLATE_PARAMETER_NAME, MOCK_PROV_TEMPLATE_NAME);
         parameterMap.put(CLAIM_CERTIFICATE_PATH_PARAMETER_NAME, claimCertificatePath.toString());
         parameterMap.put(CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME, privateKeyPath.toString());
         parameterMap.put(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME, signKeyPath.toString());
         parameterMap.put(ROOT_CA_PATH_PARAMETER_NAME, rootCAPath.toString());
         parameterMap.put(ROOT_PATH_PARAMETER_NAME, rootDir);
-        parameterMap.put(PROVISION_ENDPOINT_PARAMETER_NAME, MOCK_PROVISION_ENDPOINT);
+        parameterMap.put(ROUTER_ENDPOINT_PARAMETER_NAME, MOCK_ROUTER_ENDPOINT);
         return parameterMap;
     }
 

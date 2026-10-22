@@ -59,7 +59,16 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
         private static final Logger logger = LogManager.getLogger(FleetProvisioningByClaimPlugin.class);
 
         // Required parameters
+        // Router mode: the fleet-management claim broker. Named for what it is so a
+        // configuration written for the legacy mgmt protocol (1.x, `provisionEndpoint`
+        // = the mgmt ATS endpoint) is never mistaken for one: both keys can sit in the
+        // same config.yaml, each read by the plugin version that understands it.
+        static final String ROUTER_ENDPOINT_PARAMETER_NAME = "routerEndpoint";
+        // 1.x's claim-broker key. Not read; only detected, to name the migration gap.
         static final String PROVISION_ENDPOINT_PARAMETER_NAME = "provisionEndpoint";
+        // Direct mode: the tenant template to call RegisterThing with. Router mode takes
+        // it from the Router response and falls back to this key when the response has
+        // none.
         static final String PROVISIONING_TEMPLATE_PARAMETER_NAME = "provisioningTemplate";
         static final String CLAIM_CERTIFICATE_PATH_PARAMETER_NAME = "claimCertificatePath";
         static final String CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME = "claimCertificatePrivateKeyPath";
@@ -94,6 +103,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
 
         static final String MISSING_REQUIRED_PARAMETERS_ERROR_FORMAT = "Required parameter %s missing for "
                         + PLUGIN_NAME;
+        static final String LEGACY_ROUTER_CONFIG_ERROR_FORMAT = "%s is set but %s is missing for " + PLUGIN_NAME
+                        + ": this configuration was written for the legacy mgmt provisioning protocol (fb-provision 1.x)"
+                        + " and has not been migrated to the fleet-management Router; add %s (factbird-edge-image#203)";
+        static final String NO_PROVISIONING_TEMPLATE_ERROR = "No provisioning template: the Router response carried"
+                        + " none and " + PROVISIONING_TEMPLATE_PARAMETER_NAME + " is not configured";
 
         static final String DEVICE_CONFIGURATION_PATH_RELATIVE_TO_ROOT = "/config/device_config.json";
         static final String DEVICE_CERTIFICATE_PATH_RELATIVE_TO_ROOT = "/auth/prov.cert.pem";
@@ -175,7 +189,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         if (params.directMode) {
                                 logger.atInfo().log("Direct provisioning mode: token + endpoints supplied via component config");
                                 tenant = new TenantAccess(params.iotDataEndpoint, params.iotCredentialsEndpoint,
-                                                params.provisioningToken);
+                                                params.provisioningToken, params.templateName);
                         } else {
                                 tenant = waitForClaim(params, identity);
                         }
@@ -221,13 +235,13 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                         .mqttPort(params.mqttPort);
 
                         while (true) {
-                                logger.atInfo().log("Starting first MQTT connection to provision endpoint: {}", params.provisionEndpoint);
+                                logger.atInfo().log("Starting first MQTT connection to Router endpoint: {}", params.routerEndpoint);
                                 try (EventLoopGroup eventLoopGroup = new EventLoopGroup(1);
                                                 HostResolver resolver = new HostResolver(eventLoopGroup);
                                                 ClientBootstrap clientBootstrap = new ClientBootstrap(eventLoopGroup, resolver)) {
 
                                         MqttClientConnection mgmtConnection = connectToClaimEndpoint(claimBuilder
-                                                        .endpoint(params.provisionEndpoint)
+                                                        .endpoint(params.routerEndpoint)
                                                         .clientBootstrap(clientBootstrap).build());
                                         try {
                                                 logger.atInfo().log("MQTT connection establishment. Getting claim status");
@@ -324,7 +338,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 try {
                         ProvisionResponse resolved = response.get(claimWaitSeconds, TimeUnit.SECONDS);
                         return new TenantAccess(resolved.iotDataEndpoint, resolved.iotCredentialsEndpoint,
-                                        resolved.provisioningToken);
+                                        resolved.provisioningToken, resolved.provisioningTemplate);
                 } catch (TimeoutException e) {
                         throw new ClaimWaitTimeout();
                 } catch (ExecutionException e) {
@@ -448,8 +462,25 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 parameterHashMap.put("uuid", identity.clientId);
                 parameterHashMap.put("signature", identity.signature);
 
+                // The template is a per-device-type constant the cloud owns, so the Router
+                // hands it out; the config key is the direct-mode source and the fallback for
+                // a Router that sends none. A device configured for the legacy template
+                // (kirkstone installer) would otherwise call a template whose hook rejects
+                // custom-auth sessions.
+                String templateName;
+                if (tenant.provisioningTemplate != null && !tenant.provisioningTemplate.isEmpty()) {
+                        templateName = tenant.provisioningTemplate;
+                        logger.atInfo().kv("template", templateName).log("Provisioning template from the Router response");
+                } else if (params.templateName != null && !params.templateName.isEmpty()) {
+                        templateName = params.templateName;
+                        logger.atInfo().kv("template", templateName)
+                                        .log("Provisioning template from " + PROVISIONING_TEMPLATE_PARAMETER_NAME);
+                } else {
+                        throw new RetryableProvisioningException(NO_PROVISIONING_TEMPLATE_ERROR);
+                }
+
                 Future<RegisterThingResponse> registerFuture = iotIdentityHelper
-                    .registerThing(certificateOwnershipToken, params.templateName, parameterHashMap);
+                    .registerThing(certificateOwnershipToken, templateName, parameterHashMap);
                 RegisterThingResponse registerThingResponse = FutureExceptionHandler
                     .getFutureAfterCompletion(registerFuture,
                         "Caught exception during registering Iot Thing");
@@ -474,16 +505,22 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 private static final long serialVersionUID = 1L;
         }
 
-        /** What stage 2 resolves: where the tenant is and what proves we may join it. */
+        /**
+         * What stage 2 resolves: where the tenant is, what proves we may join it, and which
+         * template registers us there ({@code null} when the source had none).
+         */
         private static final class TenantAccess {
                 final String iotDataEndpoint;
                 final String iotCredentialsEndpoint;
                 final String provisioningToken;
+                final String provisioningTemplate;
 
-                TenantAccess(String iotDataEndpoint, String iotCredentialsEndpoint, String provisioningToken) {
+                TenantAccess(String iotDataEndpoint, String iotCredentialsEndpoint, String provisioningToken,
+                                String provisioningTemplate) {
                         this.iotDataEndpoint = iotDataEndpoint;
                         this.iotCredentialsEndpoint = iotCredentialsEndpoint;
                         this.provisioningToken = provisioningToken;
+                        this.provisioningTemplate = provisioningTemplate;
                 }
         }
 
@@ -553,7 +590,7 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 final String keyPath;
                 final String signKeyPath;
                 final Integer mqttPort;
-                final String provisionEndpoint;
+                final String routerEndpoint;
                 final boolean useTpmProvisioning;
                 final String pkcs11Library;
                 final String pkcs11Slot;
@@ -578,14 +615,14 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         signKeyPath = parameterMap.get(SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME).toString();
                         mqttPort = parameterMap.get(MQTT_PORT_PARAMETER_NAME) == null ? null
                                         : Integer.valueOf(parameterMap.get(MQTT_PORT_PARAMETER_NAME).toString());
-                        provisionEndpoint = optional(parameterMap, PROVISION_ENDPOINT_PARAMETER_NAME);
+                        routerEndpoint = optional(parameterMap, ROUTER_ENDPOINT_PARAMETER_NAME);
                         useTpmProvisioning = isUseTpmProvisioning(parameterMap);
                         pkcs11Library = optional(parameterMap, PKCS11_LIBRARY_PARAMETER_NAME);
                         pkcs11Slot = optional(parameterMap, PKCS11_SLOT_PARAMETER_NAME);
                         pkcs11UserPin = optional(parameterMap, PKCS11_USER_PIN_PARAMETER_NAME);
                         rootCaPath = parameterMap.get(ROOT_CA_PATH_PARAMETER_NAME).toString();
                         rootPath = parameterMap.get(ROOT_PATH_PARAMETER_NAME).toString();
-                        templateName = parameterMap.get(PROVISIONING_TEMPLATE_PARAMETER_NAME).toString();
+                        templateName = optional(parameterMap, PROVISIONING_TEMPLATE_PARAMETER_NAME);
                         TlsContext proxyTlsContext = new ClientTlsContext(getTlsContextOptions(rootCaPath));
                         httpProxyOptions = MqttConnectionHelper.getHttpProxyOptions(
                                         optional(parameterMap, PROXY_URL_PARAMETER_NAME),
@@ -653,7 +690,6 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                 List<String> errors = new ArrayList<>();
 
                 // Always required.
-                checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, SIGN_PRIVATE_KEY_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_CA_PATH_PARAMETER_NAME);
                 checkRequiredParameterPresent(parameterMap, errors, ROOT_PATH_PARAMETER_NAME);
@@ -662,14 +698,26 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                                 && !Utils.isEmpty(parameterMap.get(PROVISIONING_TOKEN_PARAMETER_NAME).toString());
 
                 if (directMode) {
-                        // Token + endpoints supplied directly; no Router round-trip and no claim cert needed.
+                        // Token + endpoints + template supplied directly; no Router round-trip and no
+                        // claim cert needed.
                         checkRequiredParameterPresent(parameterMap, errors, IOT_DATA_ENDPOINT_PARAMETER_NAME);
                         checkRequiredParameterPresent(parameterMap, errors, IOT_CREDENTIALS_ENDPOINT_PARAMETER_NAME);
+                        checkRequiredParameterPresent(parameterMap, errors, PROVISIONING_TEMPLATE_PARAMETER_NAME);
                 } else {
-                        // Router-mode: connect to mgmt MQTT with the claim cert to obtain the token.
-                        checkRequiredParameterPresent(parameterMap, errors, PROVISION_ENDPOINT_PARAMETER_NAME);
+                        // Router mode: connect to the fleet-management Router with the claim cert to
+                        // obtain the token; the template comes with the response.
+                        checkRequiredParameterPresent(parameterMap, errors, ROUTER_ENDPOINT_PARAMETER_NAME);
                         checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PATH_PARAMETER_NAME);
                         checkRequiredParameterPresent(parameterMap, errors, CLAIM_CERTIFICATE_PRIVATE_KEY_PATH_PARAMETER_NAME);
+                        // A config.yaml the kirkstone installer wrote has the 1.x key and not ours.
+                        // Retrying forever against the mgmt broker is what this used to do; name
+                        // the gap instead, once, where the journal shows it.
+                        if (isMissing(parameterMap, ROUTER_ENDPOINT_PARAMETER_NAME)
+                                        && !isMissing(parameterMap, PROVISION_ENDPOINT_PARAMETER_NAME)) {
+                                errors.add(String.format(LEGACY_ROUTER_CONFIG_ERROR_FORMAT,
+                                                PROVISION_ENDPOINT_PARAMETER_NAME, ROUTER_ENDPOINT_PARAMETER_NAME,
+                                                ROUTER_ENDPOINT_PARAMETER_NAME));
+                        }
                 }
 
                 if (!errors.isEmpty()) {
@@ -743,6 +791,11 @@ public class FleetProvisioningByClaimPlugin implements DeviceIdentityInterface {
                         return false;
                 }
                 return value instanceof Boolean ? (Boolean) value : Boolean.parseBoolean(value.toString());
+        }
+
+        private static boolean isMissing(Map<String, Object> parameterMap, String parameterName) {
+                Object value = parameterMap.get(parameterName);
+                return value == null || Utils.isEmpty(value.toString());
         }
 
         private void checkRequiredParameterPresent(Map<String, Object> parameterMap, List<String> errors,

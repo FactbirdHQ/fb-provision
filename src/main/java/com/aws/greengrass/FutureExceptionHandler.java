@@ -66,16 +66,16 @@ public final class FutureExceptionHandler {
                 // This code will not be reached but compiler complains about return value
                 throw new RuntimeException(e);
             } catch (TimeoutException e1) {
-                logger.atWarn().setCause(e1).kv("retryable", true).log(errorMessage);
+                logger.atWarn().setCause(e1).kv("retryable", true).log(message(errorMessage));
                 throw new RetryableProvisioningException(e1);
             } catch (InterruptedException e1) {
                 throw e1;
             } catch (ExecutionException e1) {
-                logger.atError().setCause(e1).log(errorMessage);
+                logger.atError().setCause(e1).log(message(errorMessage));
                 throw new RuntimeException(e1.getCause());
             }
         } catch (TimeoutException e1) {
-            logger.atWarn().setCause(e1).kv("retryable", true).log(errorMessage);
+            logger.atWarn().setCause(e1).kv("retryable", true).log(message(errorMessage));
             throw new RetryableProvisioningException(e1);
         }
     }
@@ -96,5 +96,13 @@ public final class FutureExceptionHandler {
             throw (InterruptedException) cause;
         }
         throw e;
+    }
+
+    /**
+     * The varargs message as one line. Logging the array itself printed its object
+     * identity ({@code [Ljava.lang.String;@...}) instead of the message.
+     */
+    private static String message(String... errorMessage) {
+        return errorMessage.length == 0 ? "Future completed exceptionally" : String.join(" ", errorMessage);
     }
 }
